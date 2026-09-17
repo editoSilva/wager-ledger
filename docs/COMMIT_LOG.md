@@ -42,3 +42,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: cria o log versionado e exige sua atualização pelo agente de commits.
 - Arquivos: `.claude/agents/commit-manager.md`, `docs/COMMIT_LOG.md`.
+
+## 2026-09-17 — feature — feat(money): valida moeda ISO 4217 e corrige conversão de valores extremos
+
+- Efeito: rejeita códigos de moeda fora da lista ISO 4217, bloqueia operações sobre o valor zero-value de Money e corrige overflow na conversão decimal de math.MinInt64.
+- Arquivos: `internal/domain/money/money.go`, `internal/domain/money/money_test.go`.
