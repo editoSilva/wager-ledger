@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS wager_tx_successful_reversal_reference_unique;

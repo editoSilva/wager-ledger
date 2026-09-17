@@ -130,6 +130,20 @@ func TestNewExternalTransaction_BetWinLoss_RejectReference(t *testing.T) {
 	}
 }
 
+func TestNewExternalTransaction_Win_AllowsOptionalReference(t *testing.T) {
+	tx, err := NewExternalTransaction(
+		"tx-1", "provider-a", "ext-123", "key", "hash",
+		"wallet-1", "player-1", "round-1", "game-1",
+		KindWin, mustMoney(t, "10.00"), "ext-original-bet", fixedNow,
+	)
+	if err != nil {
+		t.Fatalf("WIN com referência opcional deveria ser aceito: %v", err)
+	}
+	if tx.ReferenceExternalID() != "ext-original-bet" {
+		t.Errorf("ReferenceExternalID = %q", tx.ReferenceExternalID())
+	}
+}
+
 func TestNewExternalTransaction_RequiredFieldsMissing(t *testing.T) {
 	valid := mustMoney(t, "10.00")
 	cases := []struct {

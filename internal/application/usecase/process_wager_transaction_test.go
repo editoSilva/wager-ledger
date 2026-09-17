@@ -263,11 +263,81 @@ func TestProcessWagerTransaction_UnsupportedKind_Rejected(t *testing.T) {
 	seedWallet(t, walletRepo, "100.00")
 
 	in := betInput("key-1", "tx-1", "30.00")
-	in.Kind = string(wagertx.KindRefund)
+	in.Kind = "UNKNOWN"
 
 	_, err := uc.Execute(context.Background(), in)
 	if !errors.Is(err, ErrUnsupportedKind) {
 		t.Errorf("esperava ErrUnsupportedKind, got %v", err)
+	}
+}
+
+func TestProcessWagerTransaction_Refund_CreditsReferencedBet(t *testing.T) {
+	uc, walletRepo, _, ledgerRepo, _ := newTestProcessWagerTransaction()
+	seedWallet(t, walletRepo, "100.00")
+
+	bet := betInput("bet-key", "bet-1", "30.00")
+	if _, err := uc.Execute(context.Background(), bet); err != nil {
+		t.Fatalf("BET: %v", err)
+	}
+
+	refund := betInput("refund-key", "refund-1", "30.00")
+	refund.Kind = string(wagertx.KindRefund)
+	refund.ReferenceExternalTransactionID = bet.ExternalTransactionID
+	out, err := uc.Execute(context.Background(), refund)
+	if err != nil {
+		t.Fatalf("REFUND: %v", err)
+	}
+	if out.Status != string(wagertx.StatusProcessed) || out.Balance.DecimalString() != "100.00" {
+		t.Fatalf("resultado REFUND = %#v, esperado PROCESSED e saldo 100.00", out)
+	}
+	if len(ledgerRepo.entries) != 2 || ledgerRepo.entries[1].Direction() != ledger.DirectionCredit {
+		t.Fatalf("ledger após REFUND = %#v, esperado crédito de devolução", ledgerRepo.entries)
+	}
+}
+
+func TestProcessWagerTransaction_RollbackOfBet_CreditsWallet(t *testing.T) {
+	uc, walletRepo, _, ledgerRepo, _ := newTestProcessWagerTransaction()
+	seedWallet(t, walletRepo, "100.00")
+
+	bet := betInput("bet-key", "bet-1", "30.00")
+	if _, err := uc.Execute(context.Background(), bet); err != nil {
+		t.Fatalf("BET: %v", err)
+	}
+
+	rollback := betInput("rollback-key", "rollback-1", "30.00")
+	rollback.Kind = string(wagertx.KindRollback)
+	rollback.ReferenceExternalTransactionID = bet.ExternalTransactionID
+	out, err := uc.Execute(context.Background(), rollback)
+	if err != nil {
+		t.Fatalf("ROLLBACK: %v", err)
+	}
+	if out.Status != string(wagertx.StatusProcessed) || out.Balance.DecimalString() != "100.00" {
+		t.Fatalf("resultado ROLLBACK = %#v, esperado PROCESSED e saldo 100.00", out)
+	}
+	if len(ledgerRepo.entries) != 2 || ledgerRepo.entries[1].Direction() != ledger.DirectionCredit {
+		t.Fatalf("ledger após ROLLBACK = %#v, esperado crédito de reversão", ledgerRepo.entries)
+	}
+}
+
+func TestProcessWagerTransaction_ReferenceNotFound_PersistsPendingReference(t *testing.T) {
+	uc, walletRepo, _, ledgerRepo, outboxRepo := newTestProcessWagerTransaction()
+	seedWallet(t, walletRepo, "100.00")
+
+	refund := betInput("refund-key", "refund-1", "30.00")
+	refund.Kind = string(wagertx.KindRefund)
+	refund.ReferenceExternalTransactionID = "missing-bet"
+	out, err := uc.Execute(context.Background(), refund)
+	if err != nil {
+		t.Fatalf("REFUND pendente: %v", err)
+	}
+	if out.Status != string(wagertx.StatusPendingReference) || out.Balance.DecimalString() != "100.00" {
+		t.Fatalf("resultado pendente = %#v, esperado PENDING_REFERENCE com saldo inalterado", out)
+	}
+	if len(ledgerRepo.entries) != 0 {
+		t.Errorf("pendência não deveria criar ledger, achou %d", len(ledgerRepo.entries))
+	}
+	if len(outboxRepo.events) != 1 || outboxRepo.events[0].Type != event.TypeWagerTransactionPendingReference {
+		t.Fatalf("eventos = %#v, esperado WagerTransactionPendingReference", outboxRepo.events)
 	}
 }
 

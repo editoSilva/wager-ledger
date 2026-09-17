@@ -163,6 +163,15 @@ func (r *fakeTxRepo) FindByIdempotencyKey(ctx context.Context, idempotencyKey st
 	return nil, ports.ErrNotFound
 }
 
+func (r *fakeTxRepo) FindProcessedReversalByReference(ctx context.Context, referenceID wagertx.ID) (*wagertx.WagerTransaction, error) {
+	for _, tx := range r.byID {
+		if tx.ResolvedReferenceID() == referenceID && tx.Status() == wagertx.StatusProcessed && (tx.Kind() == wagertx.KindRefund || tx.Kind() == wagertx.KindRollback) {
+			return cloneWagerTx(tx), nil
+		}
+	}
+	return nil, ports.ErrNotFound
+}
+
 func (r *fakeTxRepo) Create(ctx context.Context, tx *wagertx.WagerTransaction) error {
 	if _, exists := r.byID[tx.ID()]; exists {
 		return ports.ErrAlreadyExists

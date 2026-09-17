@@ -55,6 +55,16 @@ func (r *WagerTransactionRepository) FindByIdempotencyKey(ctx context.Context, i
 	return scanWagerTx(row)
 }
 
+func (r *WagerTransactionRepository) FindProcessedReversalByReference(ctx context.Context, referenceID wagertx.ID) (*wagertx.WagerTransaction, error) {
+	q := querierFrom(ctx, r.pool)
+	row := q.QueryRow(ctx,
+		`SELECT `+wagerTxColumns+` FROM wager_transactions
+		 WHERE resolved_reference_id = $1 AND kind IN ('REFUND', 'ROLLBACK') AND status = 'PROCESSED'`,
+		string(referenceID),
+	)
+	return scanWagerTx(row)
+}
+
 func (r *WagerTransactionRepository) Create(ctx context.Context, tx *wagertx.WagerTransaction) error {
 	q := querierFrom(ctx, r.pool)
 

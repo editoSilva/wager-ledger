@@ -18,6 +18,11 @@ segredos, tokens, conteúdos de arquivos `.env` ou dados de clientes. O hash
 não entra na própria entrada porque ele só é calculado depois que o conteúdo
 do commit é definido; a associação é feita pelo commit que versiona a entrada.
 
+## 2026-09-17 — feature — feat(reversals): processa REFUND, ROLLBACK e pendências de referência
+
+- Efeito: adiciona validação de referência, crédito/débito inverso, proteção de reversão duplicada no banco e persistência de operações que aguardam a referência.
+- Arquivos: `internal/application/usecase/process_wager_transaction.go`, `internal/domain/wagertx/wagertx.go`, `internal/infra/postgres/wagertx_repository.go`, `migrations/0007_wagertx_win_reference*.sql`, `migrations/0008_wagertx_reversal_unique*.sql` e testes associados.
+
 ## 2026-09-17 — bugfix — fix(wagering): fortalece idempotência e autorização
 
 - Efeito: torna a chave de idempotência única no banco, preserva o saldo de respostas rejeitadas em replays e restringe leituras de carteiras e transações às identidades autorizadas.

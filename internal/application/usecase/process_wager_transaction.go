@@ -20,6 +20,13 @@ var (
 	ErrTooManyRetries       = errors.New("usecase: número máximo de tentativas de concorrência excedido")
 )
 
+const (
+	failureCodeReferenceMismatch           = "REFERENCE_MISMATCH"
+	failureCodeReferenceNotProcessable     = "REFERENCE_NOT_PROCESSABLE"
+	failureCodeReferenceAlreadyReversed    = "REFERENCE_ALREADY_REVERSED"
+	failureCodeReversalInsufficientBalance = "REVERSAL_INSUFFICIENT_BALANCE"
+)
+
 type ProcessWagerTransactionInput struct {
 	ProviderID                     string
 	ExternalTransactionID          string
@@ -75,7 +82,7 @@ func NewProcessWagerTransaction(
 func (uc *ProcessWagerTransaction) Execute(ctx context.Context, in ProcessWagerTransactionInput) (*ProcessWagerTransactionOutput, error) {
 	kind := wagertx.Kind(in.Kind)
 	switch kind {
-	case wagertx.KindBet, wagertx.KindWin, wagertx.KindLoss:
+	case wagertx.KindBet, wagertx.KindWin, wagertx.KindLoss, wagertx.KindRefund, wagertx.KindRollback:
 	default:
 		return nil, ErrUnsupportedKind
 	}
@@ -150,6 +157,38 @@ func (uc *ProcessWagerTransaction) attempt(ctx context.Context, in ProcessWagerT
 		return uc.reject(ctx, tx, w, wagertx.FailureCodeCurrencyMismatch, now, correlationID)
 	}
 
+	var reference *wagertx.WagerTransaction
+	if in.ReferenceExternalTransactionID != "" {
+		reference, err = uc.txRepo.FindByProviderAndExternalID(ctx, in.ProviderID, in.ReferenceExternalTransactionID)
+		if errors.Is(err, ports.ErrNotFound) {
+			return uc.pendingReference(ctx, tx, w, now, correlationID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if reference.Status() != wagertx.StatusProcessed {
+			if reference.IsTerminal() {
+				return uc.reject(ctx, tx, w, failureCodeReferenceNotProcessable, now, correlationID)
+			}
+			return uc.pendingReference(ctx, tx, w, now, correlationID)
+		}
+		if failureCode := validateReference(kind, tx, reference); failureCode != "" {
+			return uc.reject(ctx, tx, w, failureCode, now, correlationID)
+		}
+		if kind == wagertx.KindRefund || kind == wagertx.KindRollback {
+			alreadyReversed, err := uc.txRepo.FindProcessedReversalByReference(ctx, reference.ID())
+			if err != nil && !errors.Is(err, ports.ErrNotFound) {
+				return nil, err
+			}
+			if alreadyReversed != nil {
+				return uc.reject(ctx, tx, w, failureCodeReferenceAlreadyReversed, now, correlationID)
+			}
+		}
+		if err := tx.ResolveReference(reference.ID(), now); err != nil {
+			return nil, err
+		}
+	}
+
 	previousVersion := w.Version()
 	balanceBefore := w.Balance()
 
@@ -168,6 +207,27 @@ func (uc *ProcessWagerTransaction) attempt(ctx context.Context, in ProcessWagerT
 			return nil, err
 		}
 		return uc.settle(ctx, tx, w, previousVersion, balanceBefore, ledger.DirectionCredit, in.Money, now, correlationID)
+
+	case wagertx.KindRefund:
+		if err := w.Credit(in.Money, now); err != nil {
+			return nil, err
+		}
+		return uc.settle(ctx, tx, w, previousVersion, balanceBefore, ledger.DirectionCredit, in.Money, now, correlationID)
+
+	case wagertx.KindRollback:
+		direction := ledger.DirectionCredit
+		if reference.Kind() == wagertx.KindWin || reference.Kind() == wagertx.KindRefund {
+			direction = ledger.DirectionDebit
+			if err := w.Debit(in.Money, now); err != nil {
+				if errors.Is(err, wallet.ErrInsufficientBalance) {
+					return uc.reject(ctx, tx, w, failureCodeReversalInsufficientBalance, now, correlationID)
+				}
+				return nil, err
+			}
+		} else if err := w.Credit(in.Money, now); err != nil {
+			return nil, err
+		}
+		return uc.settle(ctx, tx, w, previousVersion, balanceBefore, direction, in.Money, now, correlationID)
 
 	case wagertx.KindLoss:
 		if err := tx.MarkProcessed(w.Balance(), now); err != nil {
@@ -189,6 +249,39 @@ func (uc *ProcessWagerTransaction) attempt(ctx context.Context, in ProcessWagerT
 	}
 
 	return nil, ErrUnsupportedKind
+}
+
+func (uc *ProcessWagerTransaction) pendingReference(ctx context.Context, tx *wagertx.WagerTransaction, w *wallet.Wallet, now time.Time, correlationID string) (*ProcessWagerTransactionOutput, error) {
+	if err := tx.MarkPendingReference(now); err != nil {
+		return nil, err
+	}
+	if err := uc.txRepo.Update(ctx, tx); err != nil {
+		return nil, err
+	}
+	pendingEvent := event.NewWagerTransactionPendingReference(uc.idGen.NewID(), string(w.ID()), correlationID, now, event.WagerTransactionPendingReferenceData{
+		TransactionID: string(tx.ID()), WalletID: string(w.ID()), ProviderID: tx.ProviderID(), ExternalID: tx.ExternalID(), ReferenceExternalID: tx.ReferenceExternalID(),
+	})
+	if err := uc.outboxRepo.Create(ctx, pendingEvent); err != nil {
+		return nil, err
+	}
+	return &ProcessWagerTransactionOutput{TransactionID: string(tx.ID()), Status: string(tx.Status()), Balance: w.Balance()}, nil
+}
+
+func validateReference(kind wagertx.Kind, tx, reference *wagertx.WagerTransaction) string {
+	if tx.ProviderID() != reference.ProviderID() || tx.PlayerID() != reference.PlayerID() || tx.WalletID() != reference.WalletID() || tx.RoundID() != reference.RoundID() || !tx.Money().Equals(reference.Money()) {
+		return failureCodeReferenceMismatch
+	}
+	switch kind {
+	case wagertx.KindWin, wagertx.KindRefund:
+		if reference.Kind() != wagertx.KindBet {
+			return failureCodeReferenceNotProcessable
+		}
+	case wagertx.KindRollback:
+		if reference.Kind() != wagertx.KindBet && reference.Kind() != wagertx.KindWin && reference.Kind() != wagertx.KindRefund {
+			return failureCodeReferenceNotProcessable
+		}
+	}
+	return ""
 }
 
 func (uc *ProcessWagerTransaction) resolveExisting(ctx context.Context, in ProcessWagerTransactionInput, hash string) (*ProcessWagerTransactionOutput, bool, error) {
