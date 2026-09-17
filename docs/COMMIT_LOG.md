@@ -52,3 +52,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: expõe contadores/histogramas Prometheus (retries, expirações, replays de idempotência, outbox) e adiciona middleware de logging estruturado por requisição HTTP.
 - Arquivos: `internal/observability/metrics.go`, `internal/observability/module.go`, `internal/infra/http/logging.go`, `internal/infra/http/logging_test.go`, `internal/infra/http/server.go`, `go.mod`, `go.sum`.
+
+## 2026-09-17 — feature — feat(health): adiciona readiness de Postgres e SQS e expõe métricas
+
+- Efeito: `/health/ready` passa a verificar conectividade real com Postgres e SQS com timeout, e `/metrics` expõe o registro Prometheus para scraping.
+- Arquivos: `internal/infra/http/health.go`, `internal/infra/http/health_test.go`, `internal/infra/http/module.go`, `internal/infra/postgres/module.go`, `internal/infra/postgres/readiness.go`, `internal/infra/sqs/readiness.go`.
