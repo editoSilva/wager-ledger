@@ -47,3 +47,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: rejeita códigos de moeda fora da lista ISO 4217, bloqueia operações sobre o valor zero-value de Money e corrige overflow na conversão decimal de math.MinInt64.
 - Arquivos: `internal/domain/money/money.go`, `internal/domain/money/money_test.go`.
+
+## 2026-09-17 — feature — feat(observability): adiciona métricas Prometheus e logging estruturado de requisições
+
+- Efeito: expõe contadores/histogramas Prometheus (retries, expirações, replays de idempotência, outbox) e adiciona middleware de logging estruturado por requisição HTTP.
+- Arquivos: `internal/observability/metrics.go`, `internal/observability/module.go`, `internal/infra/http/logging.go`, `internal/infra/http/logging_test.go`, `internal/infra/http/server.go`, `go.mod`, `go.sum`.
