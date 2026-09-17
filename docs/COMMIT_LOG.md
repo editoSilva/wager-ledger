@@ -18,6 +18,11 @@ segredos, tokens, conteúdos de arquivos `.env` ou dados de clientes. O hash
 não entra na própria entrada porque ele só é calculado depois que o conteúdo
 do commit é definido; a associação é feita pelo commit que versiona a entrada.
 
+## 2026-09-17 — feature — feat(sqs): consome mensagens com inbox transacional
+
+- Efeito: adiciona consumidor SQS, deduplicação persistente por inbox e teste do envelope de entrada.
+- Arquivos: `internal/infra/sqs/`, `internal/infra/postgres/inbox_repository.go`, `internal/application/usecase/process_wager_transaction.go` e configurações associadas.
+
 ## 2026-09-17 — feature — feat(references): retoma pendências após a referência chegar
 
 - Efeito: adiciona worker Fx com shutdown gracioso e lock de linha para concluir transações `PENDING_REFERENCE` de forma segura.

@@ -42,6 +42,11 @@ type OutboxRepository interface {
 	Create(ctx context.Context, e event.Event) error
 }
 
+type InboxRepository interface {
+	Create(ctx context.Context, consumerName, messageID, messageHash string) error
+	MarkCompleted(ctx context.Context, consumerName, messageID string) error
+}
+
 type UnitOfWork interface {
 	Execute(ctx context.Context, fn func(ctx context.Context) error) error
 }

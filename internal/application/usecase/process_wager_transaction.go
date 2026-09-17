@@ -124,6 +124,22 @@ func (uc *ProcessWagerTransaction) Execute(ctx context.Context, in ProcessWagerT
 	return nil, ErrTooManyRetries
 }
 
+// ExecuteWithin executa dentro de uma transação já aberta, para que o
+// consumidor SQS confirme inbox e efeito financeiro no mesmo commit.
+func (uc *ProcessWagerTransaction) ExecuteWithin(ctx context.Context, in ProcessWagerTransactionInput) (*ProcessWagerTransactionOutput, error) {
+	kind := wagertx.Kind(in.Kind)
+	switch kind {
+	case wagertx.KindBet, wagertx.KindWin, wagertx.KindLoss, wagertx.KindRefund, wagertx.KindRollback:
+	default:
+		return nil, ErrUnsupportedKind
+	}
+	hash, err := computePayloadHash(canonicalWagerFields{ProviderID: in.ProviderID, ExternalTransactionID: in.ExternalTransactionID, PlayerID: in.PlayerID, WalletID: in.WalletID, RoundID: in.RoundID, GameID: in.GameID, Kind: in.Kind, MoneyAmount: in.Money.DecimalString(), MoneyCurrency: in.Money.Currency(), ReferenceExternalTransactionID: in.ReferenceExternalTransactionID})
+	if err != nil {
+		return nil, err
+	}
+	return uc.attempt(ctx, in, kind, hash)
+}
+
 // ResumePendingReference tenta concluir uma transação persistida que aguardava
 // sua referência. O lock de linha impede que dois workers a liquidem juntos.
 func (uc *ProcessWagerTransaction) ResumePendingReference(ctx context.Context, id wagertx.ID) error {
