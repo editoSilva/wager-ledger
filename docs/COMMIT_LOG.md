@@ -82,3 +82,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: exige claim `aud` correspondente e expiração obrigatória no JWT, renova o cache de JWKS periodicamente em segundo plano e provisiona o mapeamento de audience no bootstrap do Keycloak.
 - Arquivos: `internal/infra/idp/jwks.go`, `internal/infra/idp/jwks_test.go`, `internal/infra/idp/middleware.go`, `internal/infra/idp/middleware_test.go`, `internal/infra/idp/module.go`, `internal/config/config.go`, `internal/infra/http/module.go`, `internal/infra/http/wallets_test.go`, `scripts/keycloak-bootstrap.sh`.
+
+## 2026-09-17 — manutenção — feat(deploy): adiciona pipeline de deploy em VPS via Docker e imagem de migração
+
+- Efeito: adiciona CI de build/teste, imagem de migração dedicada, perfil de produção no Compose (rede restrita, somente leitura, sem privilégios) e script de deploy com rollback automático em caso de falha do readiness.
+- Arquivos: `.github/workflows/ci.yml`, `docker-compose.yml`, `docker/api.Dockerfile`, `docs/DEPLOYMENT.md`, `scripts/deploy-vps.sh`, `.claude/agents/deploy-manager.md`.

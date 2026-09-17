@@ -26,6 +26,7 @@ services:
       - "4566:4566"
     volumes:
       - localstack_data:/var/lib/localstack
+      - ./scripts/localstack-init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 5s
@@ -86,6 +87,14 @@ services:
       DATABASE_URL: postgres://wager:wager@postgres:5432/wager_ledger?sslmode=disable
       OIDC_ISSUER_URL: http://localhost:8081/realms/wager-ledger
       OIDC_JWKS_URL: http://keycloak:8080/realms/wager-ledger/protocol/openid-connect/certs
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+      EVENTS_DLQ_URL: http://localstack:4566/000000000000/wager-events-dlq.fifo
     volumes:
       - .:/src
       - api_gocache:/root/.cache/go-build
@@ -97,6 +106,50 @@ services:
         condition: service_completed_successfully
       keycloak-bootstrap:
         condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+
+  api-production:
+    profiles: [production]
+    image: ${API_IMAGE:-wager-ledger-api:unconfigured}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: ${PRODUCTION_ENV_FILE:-/opt/wager-ledger/shared/.env.production}
+        required: false
+    environment:
+      APP_ENV: production
+      HTTP_PORT: "8080"
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate-production:
+    image: ${MIGRATION_IMAGE:-wager-ledger-migrator:unconfigured}
+    profiles: [production]
+    restart: "no"
+    env_file:
+      - path: ${PRODUCTION_ENV_FILE:-/opt/wager-ledger/shared/.env.production}
+        required: false
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - 'exec migrate -path=/migrations -database="$$DATABASE_URL" up'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   postgres_data:

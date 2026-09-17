@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['feature/**', 'bugfix/**', 'hotfix/**']
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go checks and PostgreSQL integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wager
+          POSTGRES_PASSWORD: wager
+          POSTGRES_DB: wager_ledger_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U wager -d wager_ledger_test'
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://wager:wager@localhost:5432/wager_ledger_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Modules
+        run: go mod verify
+      - name: Install migration tool
+        run: go install -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.1
+      - name: Apply migrations
+        run: migrate -path migrations -database "$DATABASE_URL" up
+      - name: Vet
+        run: go vet ./...
+      - name: Tests with race detector
+        run: go test -race -count=1 -timeout=5m ./...
+      - name: Build
+        run: go build ./cmd/api
+      - name: Deployment shell syntax
+        run: bash -n scripts/deploy-vps.sh
+      - name: Workflow lint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          actionlint
+      - name: Build production images without publishing
+        run: |
+          docker build --target runtime -f docker/api.Dockerfile -t wager-ledger:ci .
+          docker build --target migrator -f docker/api.Dockerfile -t wager-ledger:migrate-ci .
