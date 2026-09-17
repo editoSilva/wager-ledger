@@ -38,6 +38,8 @@ type WagerTransactionRepository interface {
 type LedgerRepository interface {
 	Create(ctx context.Context, e *ledger.Entry) error
 	SumByWallet(ctx context.Context, walletID wallet.ID) (money.Money, error)
+	CountByWallet(ctx context.Context, walletID wallet.ID) (int, error)
+	ListByWallet(ctx context.Context, walletID wallet.ID, cursor string, limit int) ([]*ledger.Entry, string, error)
 }
 
 type OutboxRecord struct {

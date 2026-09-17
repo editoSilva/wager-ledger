@@ -285,6 +285,26 @@ func (r *fakeLedgerRepo) SumByWallet(ctx context.Context, walletID wallet.ID) (m
 	return sum, nil
 }
 
+func (r *fakeLedgerRepo) CountByWallet(ctx context.Context, walletID wallet.ID) (int, error) {
+	count := 0
+	for _, e := range r.entries {
+		if e.WalletID() == walletID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (r *fakeLedgerRepo) ListByWallet(ctx context.Context, walletID wallet.ID, cursor string, limit int) ([]*ledger.Entry, string, error) {
+	entries := make([]*ledger.Entry, 0)
+	for _, e := range r.entries {
+		if e.WalletID() == walletID {
+			entries = append(entries, e)
+		}
+	}
+	return entries, "", nil
+}
+
 func (r *fakeLedgerRepo) snapshot() []*ledger.Entry {
 	return append([]*ledger.Entry{}, r.entries...)
 }

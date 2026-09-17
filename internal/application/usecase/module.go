@@ -7,6 +7,7 @@ var Module = fx.Module("usecase",
 		NewOpenWallet,
 		NewProcessWagerTransaction,
 		NewReferenceRetryWorker,
+		NewReconcileWallet,
 	),
 	fx.Invoke(func(*ReferenceRetryWorker) {}),
 )

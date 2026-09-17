@@ -3,16 +3,50 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/editosilva/wager-ledger/internal/application/usecase"
 	"github.com/editosilva/wager-ledger/internal/domain/money"
 	"github.com/editosilva/wager-ledger/internal/domain/wagertx"
+	"github.com/editosilva/wager-ledger/internal/domain/wallet"
 	"github.com/editosilva/wager-ledger/internal/infra/idgen"
+	"github.com/editosilva/wager-ledger/internal/observability"
 )
+
+// newTestWalletWithOpeningLedger cria a carteira via o caso de uso real
+// OpenWallet (não via inserção direta), garantindo o lançamento de abertura
+// no ledger, para que a reconciliação (saldo armazenado x soma do ledger)
+// seja significativa.
+func newTestWalletWithOpeningLedger(t *testing.T, pool *pgxpool.Pool, ledgerRepo *LedgerRepository, initialBalance string) *wallet.Wallet {
+	t.Helper()
+	ctx := context.Background()
+	walletRepo := NewWalletRepository(pool)
+	txRepo := NewWagerTransactionRepository(pool)
+	outboxRepo := NewOutboxRepository(pool)
+	uow := NewUnitOfWork(pool)
+	idGen := idgen.NewUUIDGenerator()
+
+	amount, err := money.FromDecimalString(initialBalance, "BRL")
+	if err != nil {
+		t.Fatalf("FromDecimalString: %v", err)
+	}
+	openWallet := usecase.NewOpenWallet(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen)
+	out, err := openWallet.Execute(ctx, usecase.OpenWalletInput{PlayerID: uuid.NewString(), InitialBalance: amount})
+	if err != nil {
+		t.Fatalf("OpenWallet.Execute: %v", err)
+	}
+	w, err := walletRepo.FindByID(ctx, wallet.ID(out.ID))
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	return w
+}
 
 func TestProcessWagerTransaction_ConcurrentBets_OneProcessedOneRejected(t *testing.T) {
 	pool := testPool(t)
@@ -25,9 +59,9 @@ func TestProcessWagerTransaction_ConcurrentBets_OneProcessedOneRejected(t *testi
 	uow := NewUnitOfWork(pool)
 	idGen := idgen.NewUUIDGenerator()
 
-	uc := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen)
+	uc := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen, observability.NewMetrics())
 
-	w := newTestWallet(t, pool, "100.00")
+	w := newTestWalletWithOpeningLedger(t, pool, ledgerRepo, "100.00")
 	amount, _ := money.FromDecimalString("80.00", "BRL")
 
 	providerID := "provider-a"
@@ -93,8 +127,8 @@ func TestProcessWagerTransaction_ConcurrentBets_OneProcessedOneRejected(t *testi
 	if err != nil {
 		t.Fatalf("SumByWallet: %v", err)
 	}
-	if ledgerSum.DecimalString() != "-80.00" {
-		t.Errorf("SumByWallet() = %s, esperado -80.00 (um único débito)", ledgerSum.DecimalString())
+	if ledgerSum.DecimalString() != "20.00" {
+		t.Errorf("SumByWallet() = %s, esperado 20.00 (abertura de 100.00 + um único débito de 80.00)", ledgerSum.DecimalString())
 	}
 
 	var ledgerCount int
@@ -102,9 +136,11 @@ func TestProcessWagerTransaction_ConcurrentBets_OneProcessedOneRejected(t *testi
 	if err := row.Scan(&ledgerCount); err != nil {
 		t.Fatalf("erro ao contar wallet_ledger_entries: %v", err)
 	}
-	if ledgerCount != 1 {
-		t.Errorf("wallet_ledger_entries = %d, esperado 1", ledgerCount)
+	if ledgerCount != 2 {
+		t.Errorf("wallet_ledger_entries = %d, esperado 2 (abertura + um único débito)", ledgerCount)
 	}
+
+	assertReconciled(t, ctx, walletRepo, ledgerRepo, w.ID())
 }
 
 func TestProcessWagerTransaction_SameBetSentConcurrently_SingleDebit(t *testing.T) {
@@ -118,9 +154,9 @@ func TestProcessWagerTransaction_SameBetSentConcurrently_SingleDebit(t *testing.
 	uow := NewUnitOfWork(pool)
 	idGen := idgen.NewUUIDGenerator()
 
-	uc := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen)
+	uc := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen, observability.NewMetrics())
 
-	w := newTestWallet(t, pool, "1000.00")
+	w := newTestWalletWithOpeningLedger(t, pool, ledgerRepo, "1000.00")
 	amount, _ := money.FromDecimalString("25.00", "BRL")
 
 	providerID := "provider-a"
@@ -184,7 +220,25 @@ func TestProcessWagerTransaction_SameBetSentConcurrently_SingleDebit(t *testing.
 	if err := row.Scan(&ledgerCount); err != nil {
 		t.Fatalf("erro ao contar wallet_ledger_entries: %v", err)
 	}
-	if ledgerCount != 1 {
-		t.Errorf("wallet_ledger_entries = %d, esperado 1 (sem duplicidade)", ledgerCount)
+	if ledgerCount != 2 {
+		t.Errorf("wallet_ledger_entries = %d, esperado 2 (abertura + um único débito, sem duplicidade)", ledgerCount)
+	}
+
+	assertReconciled(t, ctx, walletRepo, ledgerRepo, w.ID())
+}
+
+// assertReconciled cobre o item 9 do README §13: ao final de um cenário
+// relevante, o saldo armazenado da carteira deve bater com a soma do ledger,
+// exatamente o que POST /wallets/:id/reconciliation verifica em produção.
+func assertReconciled(t *testing.T, ctx context.Context, walletRepo *WalletRepository, ledgerRepo *LedgerRepository, id wallet.ID) {
+	t.Helper()
+	reconcile := usecase.NewReconcileWallet(walletRepo, ledgerRepo, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	out, err := reconcile.Execute(ctx, id)
+	if err != nil {
+		t.Fatalf("ReconcileWallet.Execute: %v", err)
+	}
+	if !out.Consistent {
+		t.Fatalf("reconciliação divergente: stored=%s calculated=%s diff=%s",
+			out.StoredBalance.DecimalString(), out.CalculatedBalance.DecimalString(), out.Difference.DecimalString())
 	}
 }

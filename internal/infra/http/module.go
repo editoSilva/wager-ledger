@@ -31,12 +31,14 @@ var Module = fx.Module("http",
 			mux *http.ServeMux,
 			openWallet *usecase.OpenWallet,
 			walletRepo ports.WalletRepository,
+			ledgerRepo ports.LedgerRepository,
+			reconcileWallet *usecase.ReconcileWallet,
 			keySet *idp.KeySet,
 			cfg config.Config,
 		) {
 			authenticate := idp.Authenticate(keySet, cfg.OIDCIssuerURL)
 			requireInternal := idp.RequireRole("internal")
-			RegisterWalletRoutes(mux, openWallet, walletRepo, authenticate, requireInternal)
+			RegisterWalletRoutes(mux, openWallet, walletRepo, ledgerRepo, reconcileWallet, authenticate, requireInternal)
 		},
 		func(
 			mux *http.ServeMux,

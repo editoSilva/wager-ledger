@@ -72,3 +72,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: adiciona worker que reivindica eventos da outbox com trava por linha (FOR UPDATE SKIP LOCKED), publica na fila SQS de eventos e reentrega com backoff exponencial em caso de falha, com fila `wager-events` provisionada no LocalStack.
 - Arquivos: `internal/infra/outbox/module.go`, `internal/infra/outbox/publisher.go`, `internal/infra/outbox/publisher_integration_test.go`, `internal/infra/postgres/outbox_repository.go`, `internal/infra/postgres/outbox_publisher_repository_test.go`, `migrations/0009_outbox_events_version.up.sql`, `migrations/0009_outbox_events_version.down.sql`, `cmd/api/main.go`, `scripts/localstack-init-sqs.sh`, `internal/application/ports/ports.go`, `internal/config/config.go`, `internal/application/usecase/open_wallet_test.go`.
+
+## 2026-09-17 — feature — feat(wallets): consulta paginada de lançamentos e reconciliação de saldo
+
+- Efeito: adiciona GET /wallets/{id}/ledger com paginação por cursor e POST /wallets/{id}/reconciliation, que confere o saldo armazenado contra a soma do ledger.
+- Arquivos: `internal/infra/postgres/ledger_repository.go`, `internal/infra/http/wallets.go`, `internal/infra/http/wallet_queries_test.go`, `internal/application/usecase/reconcile_wallet.go`, `internal/application/usecase/module.go`, `internal/infra/postgres/process_wager_transaction_integration_test.go`, `internal/application/ports/ports.go`, `internal/application/usecase/open_wallet_test.go`, `internal/infra/http/module.go`.
