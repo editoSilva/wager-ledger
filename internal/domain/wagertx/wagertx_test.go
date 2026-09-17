@@ -337,6 +337,46 @@ func TestResolveReference_RejectedAfterTerminal(t *testing.T) {
 	}
 }
 
+func TestRecordReferenceRetryAttempt_IncrementsAndSchedulesNext(t *testing.T) {
+	tx, err := NewExternalTransaction(
+		"tx-1", "provider-a", "ext-refund", "key", "hash",
+		"wallet-1", "player-1", "round-1", "game-1",
+		KindRefund, mustMoney(t, "25.00"), "ext-original-bet", fixedNow,
+	)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if err := tx.MarkPendingReference(fixedNow); err != nil {
+		t.Fatalf("MarkPendingReference erro inesperado: %v", err)
+	}
+
+	nextRetry := fixedNow.Add(2 * time.Second)
+	if err := tx.RecordReferenceRetryAttempt(nextRetry, fixedNow.Add(time.Second)); err != nil {
+		t.Fatalf("RecordReferenceRetryAttempt erro inesperado: %v", err)
+	}
+	if tx.ReferenceRetryAttempts() != 1 {
+		t.Errorf("ReferenceRetryAttempts() = %d, esperado 1", tx.ReferenceRetryAttempts())
+	}
+	if tx.ReferenceNextRetryAt() == nil || !tx.ReferenceNextRetryAt().Equal(nextRetry) {
+		t.Errorf("ReferenceNextRetryAt() = %v, esperado %v", tx.ReferenceNextRetryAt(), nextRetry)
+	}
+
+	if err := tx.ResolveReference("tx-original-bet-id", fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("ResolveReference erro inesperado: %v", err)
+	}
+	if tx.ReferenceRetryAttempts() != 0 || tx.ReferenceNextRetryAt() != nil {
+		t.Errorf("ResolveReference deveria zerar o backoff, got attempts=%d nextRetryAt=%v", tx.ReferenceRetryAttempts(), tx.ReferenceNextRetryAt())
+	}
+}
+
+func TestRecordReferenceRetryAttempt_OutsidePendingReference_ReturnsError(t *testing.T) {
+	tx := newValidBet(t)
+
+	if err := tx.RecordReferenceRetryAttempt(fixedNow.Add(time.Second), fixedNow); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("esperava ErrInvalidTransition, got %v", err)
+	}
+}
+
 func TestNewExternalTransaction_Getters(t *testing.T) {
 	amount := mustMoney(t, "25.00")
 	tx, err := NewExternalTransaction(
@@ -398,6 +438,7 @@ func TestRehydrate_RoundTrip(t *testing.T) {
 		ID("tx-1"), KindBet, StatusProcessed, wallet.ID("wallet-1"), wallet.PlayerID("player-1"), amount,
 		"provider-a", "ext-1", "key-1", "hash-1", "round-1", "game-1", "",
 		ID("resolved-1"), "FAILURE_CODE", &financialResult,
+		0, nil,
 		fixedNow, updatedAt,
 	)
 	if err != nil {
@@ -426,6 +467,7 @@ func TestRehydrate_EmptyID_ReturnsError(t *testing.T) {
 		ID(""), KindBet, StatusPending, wallet.ID("wallet-1"), wallet.PlayerID("player-1"), mustMoney(t, "1.00"),
 		"", "", "", "", "", "", "",
 		ID(""), "", nil,
+		0, nil,
 		fixedNow, fixedNow,
 	)
 	if !errors.Is(err, ErrEmptyID) {

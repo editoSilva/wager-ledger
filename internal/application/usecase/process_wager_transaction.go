@@ -166,6 +166,26 @@ func (uc *ProcessWagerTransaction) ExecuteWithin(ctx context.Context, in Process
 	return out, err
 }
 
+// referenceRetryBackoff calcula o intervalo até a próxima tentativa de
+// resolução de uma referência pendente, crescendo exponencialmente a partir
+// de 1s e limitado a 30s — evita que uma pendência que demora a resolver
+// monopolize as vagas de ListPendingReferenceIDs (LIMIT) e impeça pendências
+// mais novas de serem tentadas a cada tick do worker.
+func referenceRetryBackoff(attempts int) time.Duration {
+	const maxBackoff = 30 * time.Second
+	if attempts < 1 {
+		return time.Second
+	}
+	if attempts > 5 {
+		return maxBackoff
+	}
+	backoff := time.Second << attempts
+	if backoff > maxBackoff {
+		return maxBackoff
+	}
+	return backoff
+}
+
 // ResumePendingReference tenta concluir uma transação persistida que aguardava
 // sua referência. O lock de linha impede que dois workers a liquidem juntos.
 func (uc *ProcessWagerTransaction) ResumePendingReference(ctx context.Context, id wagertx.ID) error {
@@ -180,7 +200,12 @@ func (uc *ProcessWagerTransaction) ResumePendingReference(ctx context.Context, i
 		}
 		reference, err := uc.txRepo.FindByProviderAndExternalID(txCtx, tx.ProviderID(), tx.ReferenceExternalID())
 		if errors.Is(err, ports.ErrNotFound) || (err == nil && reference.Status() != wagertx.StatusProcessed) {
-			return nil
+			now := uc.now().UTC()
+			nextRetryAt := now.Add(referenceRetryBackoff(tx.ReferenceRetryAttempts() + 1))
+			if err := tx.RecordReferenceRetryAttempt(nextRetryAt, now); err != nil {
+				return err
+			}
+			return uc.txRepo.Update(txCtx, tx)
 		}
 		if err != nil {
 			return err

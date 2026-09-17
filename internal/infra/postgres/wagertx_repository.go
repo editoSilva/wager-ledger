@@ -20,6 +20,7 @@ const wagerTxColumns = `
 	round_id, game_id, reference_external_transaction_id,
 	resolved_reference_id, failure_code,
 	financial_result_minor_units, financial_result_currency,
+	reference_retry_attempts, reference_next_retry_at,
 	created_at, updated_at
 `
 
@@ -73,7 +74,12 @@ func (r *WagerTransactionRepository) FindProcessedReversalByReference(ctx contex
 
 func (r *WagerTransactionRepository) ListPendingReferenceIDs(ctx context.Context, limit int) ([]wagertx.ID, error) {
 	q := querierFrom(ctx, r.pool)
-	rows, err := q.Query(ctx, `SELECT id FROM wager_transactions WHERE status = 'PENDING_REFERENCE' ORDER BY created_at, id LIMIT $1`, limit)
+	rows, err := q.Query(ctx,
+		`SELECT id FROM wager_transactions
+		 WHERE status = 'PENDING_REFERENCE' AND (reference_next_retry_at IS NULL OR reference_next_retry_at <= now())
+		 ORDER BY created_at, id LIMIT $1`,
+		limit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +129,7 @@ func (r *WagerTransactionRepository) Create(ctx context.Context, tx *wagertx.Wag
 
 	_, err := q.Exec(ctx,
 		`INSERT INTO wager_transactions (`+wagerTxColumns+`) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
 		)`,
 		string(tx.ID()), string(tx.Kind()), string(tx.Status()), string(tx.WalletID()), string(tx.PlayerID()),
 		tx.Money().MinorUnits(), tx.Money().Currency(),
@@ -131,6 +137,7 @@ func (r *WagerTransactionRepository) Create(ctx context.Context, tx *wagertx.Wag
 		nullableString(tx.RoundID()), nullableString(tx.GameID()), nullableString(tx.ReferenceExternalID()),
 		nullableString(string(tx.ResolvedReferenceID())), nullableString(tx.FailureCode()),
 		financialResultMinorUnits, financialResultCurrency,
+		tx.ReferenceRetryAttempts(), tx.ReferenceNextRetryAt(),
 		tx.CreatedAt(), tx.UpdatedAt(),
 	)
 	if err != nil {
@@ -155,10 +162,13 @@ func (r *WagerTransactionRepository) Update(ctx context.Context, tx *wagertx.Wag
 		`UPDATE wager_transactions SET
 			status = $1, resolved_reference_id = $2, failure_code = $3,
 			financial_result_minor_units = $4, financial_result_currency = $5,
-			updated_at = $6
-		 WHERE id = $7`,
+			reference_retry_attempts = $6, reference_next_retry_at = $7,
+			updated_at = $8
+		 WHERE id = $9`,
 		string(tx.Status()), nullableString(string(tx.ResolvedReferenceID())), nullableString(tx.FailureCode()),
-		financialResultMinorUnits, financialResultCurrency, tx.UpdatedAt(), string(tx.ID()),
+		financialResultMinorUnits, financialResultCurrency,
+		tx.ReferenceRetryAttempts(), tx.ReferenceNextRetryAt(),
+		tx.UpdatedAt(), string(tx.ID()),
 	)
 	if err != nil {
 		return err
@@ -177,6 +187,8 @@ func scanWagerTx(row pgx.Row) (*wagertx.WagerTransaction, error) {
 		resolvedReferenceID, failureCode                                                          *string
 		financialResultMinorUnits                                                                 *int64
 		financialResultCurrency                                                                   *string
+		referenceRetryAttempts                                                                    int
+		referenceNextRetryAt                                                                      *time.Time
 		createdAt, updatedAt                                                                      time.Time
 	)
 
@@ -184,6 +196,7 @@ func scanWagerTx(row pgx.Row) (*wagertx.WagerTransaction, error) {
 		&id, &kind, &status, &walletID, &playerID, &amountMinorUnits, &currency,
 		&providerID, &externalID, &idempotencyKey, &payloadHash, &roundID, &gameID, &referenceExternalID,
 		&resolvedReferenceID, &failureCode, &financialResultMinorUnits, &financialResultCurrency,
+		&referenceRetryAttempts, &referenceNextRetryAt,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -213,6 +226,7 @@ func scanWagerTx(row pgx.Row) (*wagertx.WagerTransaction, error) {
 		deref(providerID), deref(externalID), deref(idempotencyKey), deref(payloadHash),
 		deref(roundID), deref(gameID), deref(referenceExternalID),
 		wagertx.ID(deref(resolvedReferenceID)), deref(failureCode), financialResult,
+		referenceRetryAttempts, referenceNextRetryAt,
 		createdAt, updatedAt,
 	)
 	if err != nil {

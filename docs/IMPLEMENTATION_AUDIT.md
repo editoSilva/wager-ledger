@@ -1,5 +1,44 @@
 # Auditoria de implementação e documentação
 
+**Atualização: 17/09/2026 (revisão go-reviewer)** — revisão de código por
+agente especialista em Go, focada em domínio financeiro (wallet, wagertx,
+ledger, money, inbox/outbox, idempotência). Confirmou como corretas todas
+as correções das rodadas anteriores (unicidade de `idempotency_key`, WIN
+com referência, replay de REJECTED, classificação 503/500, inbox sem
+abort, TTL de pendências) e encontrou 3 achados novos, todos corrigidos
+nesta rodada:
+
+1. **Importante** — `reference_retry_worker.go` fazia polling sem
+   backoff: as colunas `reference_retry_attempts`/`reference_next_retry_at`
+   (migration 0005) nunca eram lidas/escritas, e o `LIMIT 32` do
+   `ListPendingReferenceIDs` podia ficar permanentemente ocupado por
+   pendências antigas sem solução, impedindo pendências mais novas de
+   serem tentadas (starvation). Corrigido: `WagerTransaction.RecordReferenceRetryAttempt`
+   grava tentativa + próximo horário (backoff exponencial 1s–30s,
+   `referenceRetryBackoff` em `process_wager_transaction.go`), `ResolveReference`
+   zera o backoff ao resolver, e `ListPendingReferenceIDs` filtra por
+   `reference_next_retry_at IS NULL OR <= now()`. Testes:
+   `TestRecordReferenceRetryAttempt_*` (domínio),
+   `TestProcessWagerTransaction_ResumePendingReference_WithoutReference_SchedulesBackoff`
+   (usecase).
+2. **Importante** — `writeProcessWagerTransactionError` só classificava
+   um punhado de erros; qualquer erro de validação de domínio
+   (`wagertx.Err...`) caía no `default` e voltava como 500, tratando
+   payload malformado do provedor como incidente interno. Corrigido:
+   `wagertx.IsInputValidationError` + `case` dedicado retornando 400.
+3. **Importante** — `money.Money{}` zero-value (chave `"money"` ausente
+   no JSON) escapava da validação ISO 4217 para `LOSS` (aceita
+   `amount == 0.00`) e só falhava depois na constraint
+   `wager_tx_currency_format` do Postgres, como 500 genérico. Corrigido:
+   `NewExternalTransaction` rejeita `amount.Currency() == ""`
+   explicitamente (`wagertx.ErrEmptyCurrency`). Teste:
+   `TestProcessWagerTransaction_HTTP_LossWithoutMoneyField_Returns400`.
+
+Ver ARCHITECTURE.md, limitações 10 e 11, e a nota de backoff na seção 4
+(WagerTransaction), para os detalhes de implementação.
+
+---
+
 Data original: 17/09/2026 (revisão estática). **Atualização de QA: 17/09/2026**
 — nova rodada, escopo: executar a bateria obrigatória do `README.md` §8/§13
 como testes automatizados sempre que possível, contra Postgres/LocalStack/

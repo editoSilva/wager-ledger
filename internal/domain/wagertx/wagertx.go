@@ -19,6 +19,7 @@ var (
 	ErrEmptyPlayerID        = errors.New("wagertx: playerId vazio")
 	ErrEmptyRoundID         = errors.New("wagertx: roundId vazio")
 	ErrEmptyGameID          = errors.New("wagertx: gameId vazio")
+	ErrEmptyCurrency        = errors.New("wagertx: money.currency vazio ou ausente")
 	ErrOpeningNotExternal   = errors.New("wagertx: OPENING não pode ser criado pelo fluxo externo (HTTP/SQS)")
 	ErrInvalidKind          = errors.New("wagertx: tipo de operação inválido")
 	ErrLossAmountMustBeZero = errors.New("wagertx: LOSS exige money.amount igual a 0.00")
@@ -28,6 +29,31 @@ var (
 	ErrEmptyFailureCode     = errors.New("wagertx: failureCode vazio")
 	ErrInvalidTransition    = errors.New("wagertx: transição de estado inválida a partir do estado atual")
 )
+
+// inputValidationErrors são os erros que NewExternalTransaction retorna por
+// dados de entrada malformados (payload do provedor via HTTP/SQS) — nunca
+// por falha de infraestrutura. ErrEmptyFailureCode/ErrInvalidTransition não
+// entram aqui: são invariantes internas de transição de estado, não erros de
+// payload do provedor.
+var inputValidationErrors = []error{
+	ErrEmptyID, ErrEmptyProviderID, ErrEmptyExternalID, ErrEmptyIdempotencyKey,
+	ErrEmptyPayloadHash, ErrEmptyWalletID, ErrEmptyPlayerID, ErrEmptyRoundID,
+	ErrEmptyGameID, ErrEmptyCurrency, ErrOpeningNotExternal, ErrInvalidKind,
+	ErrLossAmountMustBeZero, ErrAmountMustBePositive, ErrReferenceRequired,
+	ErrReferenceNotAllowed,
+}
+
+// IsInputValidationError informa se err representa um payload malformado do
+// provedor (deveria virar HTTP 400, não 500; e uma mensagem SQS deveria ir
+// para a DLQ, não ser reentregue indefinidamente).
+func IsInputValidationError(err error) bool {
+	for _, sentinel := range inputValidationErrors {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return false
+}
 
 // Kind é o tipo da operação.
 type Kind string
@@ -81,6 +107,11 @@ type WagerTransaction struct {
 	resolvedReferenceID ID
 	failureCode         string
 	financialResult     *money.Money
+
+	// Controle de backoff para tentativas de resolução de PENDING_REFERENCE
+	// pelo ReferenceRetryWorker — sempre zero/nulo fora desse estado.
+	referenceRetryAttempts int
+	referenceNextRetryAt   *time.Time
 
 	createdAt time.Time
 	updatedAt time.Time
@@ -158,6 +189,16 @@ func NewExternalTransaction(
 	}
 	if gameID == "" {
 		return nil, ErrEmptyGameID
+	}
+	if amount.Currency() == "" {
+		// Cobre o caso em que o JSON de entrada não trazia a chave "money"
+		// (encoding/json não invoca UnmarshalJSON para uma chave ausente,
+		// então amount fica no zero-value sem passar pela validação ISO
+		// 4217 de money.FromDecimalString). Sem essa checagem, um LOSS
+		// (que aceita amount == 0.00) passaria a validação de valor e só
+		// falharia depois, na constraint wager_tx_currency_format do
+		// Postgres, como erro genérico de infraestrutura.
+		return nil, ErrEmptyCurrency
 	}
 
 	switch rule {
@@ -240,6 +281,8 @@ func Rehydrate(
 	resolvedReferenceID ID,
 	failureCode string,
 	financialResult *money.Money,
+	referenceRetryAttempts int,
+	referenceNextRetryAt *time.Time,
 	createdAt time.Time,
 	updatedAt time.Time,
 ) (*WagerTransaction, error) {
@@ -247,46 +290,50 @@ func Rehydrate(
 		return nil, ErrEmptyID
 	}
 	return &WagerTransaction{
-		id:                  id,
-		kind:                kind,
-		status:              status,
-		walletID:            walletID,
-		playerID:            playerID,
-		money:               amount,
-		providerID:          providerID,
-		externalID:          externalID,
-		idempotencyKey:      idempotencyKey,
-		payloadHash:         payloadHash,
-		roundID:             roundID,
-		gameID:              gameID,
-		referenceExternalID: referenceExternalID,
-		resolvedReferenceID: resolvedReferenceID,
-		failureCode:         failureCode,
-		financialResult:     financialResult,
-		createdAt:           createdAt,
-		updatedAt:           updatedAt,
+		id:                     id,
+		kind:                   kind,
+		status:                 status,
+		walletID:               walletID,
+		playerID:               playerID,
+		money:                  amount,
+		providerID:             providerID,
+		externalID:             externalID,
+		idempotencyKey:         idempotencyKey,
+		payloadHash:            payloadHash,
+		roundID:                roundID,
+		gameID:                 gameID,
+		referenceExternalID:    referenceExternalID,
+		resolvedReferenceID:    resolvedReferenceID,
+		failureCode:            failureCode,
+		financialResult:        financialResult,
+		referenceRetryAttempts: referenceRetryAttempts,
+		referenceNextRetryAt:   referenceNextRetryAt,
+		createdAt:              createdAt,
+		updatedAt:              updatedAt,
 	}, nil
 }
 
 // Getters — leitura apenas.
-func (t *WagerTransaction) ID() ID                        { return t.id }
-func (t *WagerTransaction) Kind() Kind                    { return t.kind }
-func (t *WagerTransaction) Status() Status                { return t.status }
-func (t *WagerTransaction) WalletID() wallet.ID           { return t.walletID }
-func (t *WagerTransaction) PlayerID() wallet.PlayerID     { return t.playerID }
-func (t *WagerTransaction) Money() money.Money            { return t.money }
-func (t *WagerTransaction) ProviderID() string            { return t.providerID }
-func (t *WagerTransaction) ExternalID() string            { return t.externalID }
-func (t *WagerTransaction) IdempotencyKey() string        { return t.idempotencyKey }
-func (t *WagerTransaction) PayloadHash() string           { return t.payloadHash }
-func (t *WagerTransaction) RoundID() string               { return t.roundID }
-func (t *WagerTransaction) GameID() string                { return t.gameID }
-func (t *WagerTransaction) ReferenceExternalID() string   { return t.referenceExternalID }
-func (t *WagerTransaction) ResolvedReferenceID() ID       { return t.resolvedReferenceID }
-func (t *WagerTransaction) FailureCode() string           { return t.failureCode }
-func (t *WagerTransaction) FinancialResult() *money.Money { return t.financialResult }
-func (t *WagerTransaction) CreatedAt() time.Time          { return t.createdAt }
-func (t *WagerTransaction) UpdatedAt() time.Time          { return t.updatedAt }
+func (t *WagerTransaction) ID() ID                           { return t.id }
+func (t *WagerTransaction) Kind() Kind                       { return t.kind }
+func (t *WagerTransaction) Status() Status                   { return t.status }
+func (t *WagerTransaction) WalletID() wallet.ID              { return t.walletID }
+func (t *WagerTransaction) PlayerID() wallet.PlayerID        { return t.playerID }
+func (t *WagerTransaction) Money() money.Money               { return t.money }
+func (t *WagerTransaction) ProviderID() string               { return t.providerID }
+func (t *WagerTransaction) ExternalID() string               { return t.externalID }
+func (t *WagerTransaction) IdempotencyKey() string           { return t.idempotencyKey }
+func (t *WagerTransaction) PayloadHash() string              { return t.payloadHash }
+func (t *WagerTransaction) RoundID() string                  { return t.roundID }
+func (t *WagerTransaction) GameID() string                   { return t.gameID }
+func (t *WagerTransaction) ReferenceExternalID() string      { return t.referenceExternalID }
+func (t *WagerTransaction) ResolvedReferenceID() ID          { return t.resolvedReferenceID }
+func (t *WagerTransaction) FailureCode() string              { return t.failureCode }
+func (t *WagerTransaction) FinancialResult() *money.Money    { return t.financialResult }
+func (t *WagerTransaction) CreatedAt() time.Time             { return t.createdAt }
+func (t *WagerTransaction) UpdatedAt() time.Time             { return t.updatedAt }
+func (t *WagerTransaction) ReferenceRetryAttempts() int      { return t.referenceRetryAttempts }
+func (t *WagerTransaction) ReferenceNextRetryAt() *time.Time { return t.referenceNextRetryAt }
 
 // IsTerminal indica se o estado atual não admite mais transições.
 func (t *WagerTransaction) IsTerminal() bool {
@@ -365,6 +412,23 @@ func (t *WagerTransaction) ResolveReference(referenceID ID, now time.Time) error
 		return ErrInvalidTransition
 	}
 	t.resolvedReferenceID = referenceID
+	t.referenceRetryAttempts = 0
+	t.referenceNextRetryAt = nil
+	t.updatedAt = now
+	return nil
+}
+
+// RecordReferenceRetryAttempt registra uma tentativa sem sucesso de resolver
+// a referência pendente, agendando a próxima tentativa via
+// referenceNextRetryAt. Isso permite que ListPendingReferenceIDs pule
+// transações que já falharam recentemente, evitando que pendências antigas
+// monopolizem o lote e causem starvation de pendências mais novas.
+func (t *WagerTransaction) RecordReferenceRetryAttempt(nextRetryAt time.Time, now time.Time) error {
+	if t.status != StatusPendingReference {
+		return ErrInvalidTransition
+	}
+	t.referenceRetryAttempts++
+	t.referenceNextRetryAt = &nextRetryAt
 	t.updatedAt = now
 	return nil
 }

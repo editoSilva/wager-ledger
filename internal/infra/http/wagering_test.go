@@ -163,6 +163,30 @@ func TestProcessWagerTransaction_HTTP_MissingIdempotencyKey_Returns400(t *testin
 	}
 }
 
+func TestProcessWagerTransaction_HTTP_LossWithoutMoneyField_Returns400(t *testing.T) {
+	baseURL, priv, _ := testServer(t)
+	internalToken := signTestToken(t, priv, "wager-internal", []string{"internal"})
+	providerToken := signTestToken(t, priv, "provider-a", []string{"provider"})
+
+	walletID, playerID := openTestWallet(t, baseURL, internalToken, "100.00")
+
+	// LOSS aceita amount == 0.00, então a ausência da chave "money" no JSON
+	// (que faz req.Money ficar no zero-value, sem passar por
+	// money.UnmarshalJSON/ISO 4217) não é pega pela regra de valor do
+	// domínio. Sem a validação explícita de moeda vazia, isso só falharia
+	// depois na constraint do Postgres, como erro 500.
+	body := fmt.Sprintf(
+		`{"providerId":"provider-a","externalTransactionId":"%s","playerId":"%s","walletId":"%s","roundId":"round-1","gameId":"game-1","kind":"LOSS"}`,
+		randomExternalID("loss-no-money"), playerID, walletID,
+	)
+
+	resp := postWagerTransaction(t, baseURL, providerToken, randomExternalID("loss-no-money-key"), body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, esperado 400", resp.StatusCode)
+	}
+}
+
 func TestProcessWagerTransaction_HTTP_MissingAuth_Returns401(t *testing.T) {
 	baseURL, _, _ := testServer(t)
 	externalID := randomExternalID("bet-noauth")

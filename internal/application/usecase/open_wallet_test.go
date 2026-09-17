@@ -179,12 +179,17 @@ func (r *fakeTxRepo) FindProcessedReversalByReference(ctx context.Context, refer
 
 func (r *fakeTxRepo) ListPendingReferenceIDs(ctx context.Context, limit int) ([]wagertx.ID, error) {
 	ids := make([]wagertx.ID, 0, limit)
+	now := time.Now().UTC()
 	for id, tx := range r.byID {
-		if tx.Status() == wagertx.StatusPendingReference {
-			ids = append(ids, id)
-			if len(ids) == limit {
-				break
-			}
+		if tx.Status() != wagertx.StatusPendingReference {
+			continue
+		}
+		if next := tx.ReferenceNextRetryAt(); next != nil && next.After(now) {
+			continue
+		}
+		ids = append(ids, id)
+		if len(ids) == limit {
+			break
 		}
 	}
 	return ids, nil
@@ -233,6 +238,7 @@ func cloneWagerTx(tx *wagertx.WagerTransaction) *wagertx.WagerTransaction {
 		tx.ProviderID(), tx.ExternalID(), tx.IdempotencyKey(), tx.PayloadHash(),
 		tx.RoundID(), tx.GameID(), tx.ReferenceExternalID(),
 		tx.ResolvedReferenceID(), tx.FailureCode(), tx.FinancialResult(),
+		tx.ReferenceRetryAttempts(), tx.ReferenceNextRetryAt(),
 		tx.CreatedAt(), tx.UpdatedAt(),
 	)
 	if err != nil {

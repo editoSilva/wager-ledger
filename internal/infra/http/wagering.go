@@ -151,6 +151,8 @@ func writeProcessWagerTransactionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusNotFound, "not_found", "carteira não encontrada")
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		writeJSONError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "serviço temporariamente indisponível")
+	case wagertx.IsInputValidationError(err):
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", err.Error())
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "erro interno ao processar transação")
 	}

@@ -107,7 +107,15 @@ convertidas para maiúsculas antes de calcular o hash.
   resolve a pendência assim que a referência chega (`ResumePendingReference`),
   ou a expira para `FAILED` com `failureCode=REFERENCE_EXPIRED` após o TTL
   configurável `REFERENCE_PENDING_TTL` (padrão 15 minutos —
-  `ExpirePendingReference`). Essa política de TTL era uma lacuna real
+  `ExpirePendingReference`). Cada tentativa sem sucesso grava backoff
+  exponencial (1s a 30s, `referenceRetryBackoff`) em
+  `reference_retry_attempts`/`reference_next_retry_at`, e
+  `ListPendingReferenceIDs` só seleciona transações cujo backoff já
+  expirou — sem isso, uma pendência antiga sem solução ocuparia
+  permanentemente as vagas do `LIMIT` do worker, impedindo pendências
+  mais novas de serem tentadas (achado de revisão corrigido nesta
+  rodada; as colunas já existiam desde a migration 0005 mas não eram
+  usadas). Essa política de TTL era uma lacuna real
   identificada nesta rodada de QA (não havia expiração/política para
   pendências) e foi implementada com teste dedicado.
 - Máquina de estados (`internal/domain/wagertx/wagertx.go`):
@@ -469,3 +477,22 @@ integralmente na rodada de QA de 17/09/2026 (ver `docs/QA_LOG.md`):
    `writeProcessWagerTransactionError` já classifica
    `context.Canceled`/`DeadlineExceeded` como 503 e usa 500 genérico
    (sem `err.Error()`) como default.
+10. **[Corrigido nesta rodada]** Erros de validação de domínio
+    (`wagertx.Err...`, ex. `ErrAmountMustBePositive`, `ErrEmptyRoundID`)
+    caíam no `default` de `writeProcessWagerTransactionError` e voltavam
+    como 500 em vez de 400 — um payload malformado do provedor era
+    reportado como incidente interno do wager-ledger. Adicionado
+    `wagertx.IsInputValidationError` (lista fechada de sentinelas de
+    entrada, exclui `ErrInvalidTransition`/`ErrEmptyFailureCode`, que são
+    invariantes internas) e um `case` dedicado em
+    `writeProcessWagerTransactionError` que classifica esses erros como
+    400.
+11. **[Corrigido nesta rodada]** `money.Money{}` zero-value (chave
+    `"money"` ausente no JSON) escapava da validação ISO 4217, porque
+    `encoding/json` só chama `UnmarshalJSON` quando a chave existe no
+    payload. Para `LOSS` (que aceita `amount == 0.00`), isso passava
+    `NewExternalTransaction` com `currency=""` e só falhava depois, na
+    constraint `wager_tx_currency_format` do Postgres, como erro 500
+    genérico. Adicionada checagem explícita de `amount.Currency() == ""`
+    em `NewExternalTransaction` (`wagertx.ErrEmptyCurrency`), coberta por
+    `TestProcessWagerTransaction_HTTP_LossWithoutMoneyField_Returns400`.

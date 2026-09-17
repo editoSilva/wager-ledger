@@ -397,6 +397,50 @@ func TestProcessWagerTransaction_ResumePendingReference_WhenReferenceArrives(t *
 	}
 }
 
+func TestProcessWagerTransaction_ResumePendingReference_WithoutReference_SchedulesBackoff(t *testing.T) {
+	uc, walletRepo, txRepo, _, _ := newTestProcessWagerTransaction()
+	seedWallet(t, walletRepo, "100.00")
+
+	refund := betInput("refund-key", "refund-1", "30.00")
+	refund.Kind = string(wagertx.KindRefund)
+	refund.ReferenceExternalTransactionID = "missing-bet"
+	pending, err := uc.Execute(context.Background(), refund)
+	if err != nil {
+		t.Fatalf("REFUND pendente: %v", err)
+	}
+
+	if err := uc.ResumePendingReference(context.Background(), wagertx.ID(pending.TransactionID)); err != nil {
+		t.Fatalf("ResumePendingReference: %v", err)
+	}
+
+	tx, err := txRepo.FindByID(context.Background(), wagertx.ID(pending.TransactionID))
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if tx.Status() != wagertx.StatusPendingReference {
+		t.Fatalf("Status() = %v, esperado PENDING_REFERENCE (referência ainda não chegou)", tx.Status())
+	}
+	if tx.ReferenceRetryAttempts() != 1 {
+		t.Errorf("ReferenceRetryAttempts() = %d, esperado 1", tx.ReferenceRetryAttempts())
+	}
+	if tx.ReferenceNextRetryAt() == nil || !tx.ReferenceNextRetryAt().After(uc.now()) {
+		t.Errorf("ReferenceNextRetryAt() = %v, esperado horário futuro", tx.ReferenceNextRetryAt())
+	}
+
+	// Uma segunda tentativa antes do backoff expirar não deveria ser
+	// selecionada por ListPendingReferenceIDs — é essa filtragem que evita
+	// que pendências antigas monopolizem o lote do ReferenceRetryWorker.
+	ids, err := txRepo.ListPendingReferenceIDs(context.Background(), 32)
+	if err != nil {
+		t.Fatalf("ListPendingReferenceIDs: %v", err)
+	}
+	for _, id := range ids {
+		if id == wagertx.ID(pending.TransactionID) {
+			t.Fatalf("transação com backoff pendente não deveria aparecer em ListPendingReferenceIDs")
+		}
+	}
+}
+
 func TestProcessWagerTransaction_ExpirePendingReference_TransitionsToFailed(t *testing.T) {
 	uc, walletRepo, _, ledgerRepo, outboxRepo := newTestProcessWagerTransaction()
 	seedWallet(t, walletRepo, "100.00")
