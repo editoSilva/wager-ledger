@@ -341,6 +341,38 @@ func TestProcessWagerTransaction_ReferenceNotFound_PersistsPendingReference(t *t
 	}
 }
 
+func TestProcessWagerTransaction_ResumePendingReference_WhenReferenceArrives(t *testing.T) {
+	uc, walletRepo, _, ledgerRepo, _ := newTestProcessWagerTransaction()
+	seedWallet(t, walletRepo, "100.00")
+
+	refund := betInput("refund-key", "refund-1", "30.00")
+	refund.Kind = string(wagertx.KindRefund)
+	refund.ReferenceExternalTransactionID = "bet-1"
+	pending, err := uc.Execute(context.Background(), refund)
+	if err != nil {
+		t.Fatalf("REFUND pendente: %v", err)
+	}
+
+	bet := betInput("bet-key", "bet-1", "30.00")
+	if _, err := uc.Execute(context.Background(), bet); err != nil {
+		t.Fatalf("BET que resolve referência: %v", err)
+	}
+	if err := uc.ResumePendingReference(context.Background(), wagertx.ID(pending.TransactionID)); err != nil {
+		t.Fatalf("ResumePendingReference: %v", err)
+	}
+
+	if len(ledgerRepo.entries) != 2 || ledgerRepo.entries[1].Direction() != ledger.DirectionCredit {
+		t.Fatalf("ledger após retomada = %#v, esperado débito BET e crédito REFUND", ledgerRepo.entries)
+	}
+	found, err := walletRepo.FindByID(context.Background(), "wallet-1")
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if found.Balance().DecimalString() != "100.00" {
+		t.Errorf("saldo final = %s, esperado 100.00", found.Balance().DecimalString())
+	}
+}
+
 func TestProcessWagerTransaction_WalletPlayerMismatch(t *testing.T) {
 	uc, walletRepo, _, _, _ := newTestProcessWagerTransaction()
 	seedWallet(t, walletRepo, "100.00")

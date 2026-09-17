@@ -18,6 +18,11 @@ segredos, tokens, conteúdos de arquivos `.env` ou dados de clientes. O hash
 não entra na própria entrada porque ele só é calculado depois que o conteúdo
 do commit é definido; a associação é feita pelo commit que versiona a entrada.
 
+## 2026-09-17 — feature — feat(references): retoma pendências após a referência chegar
+
+- Efeito: adiciona worker Fx com shutdown gracioso e lock de linha para concluir transações `PENDING_REFERENCE` de forma segura.
+- Arquivos: `internal/application/usecase/reference_retry_worker.go`, `internal/application/usecase/process_wager_transaction.go`, `internal/application/ports/ports.go`, `internal/infra/postgres/wagertx_repository.go` e testes associados.
+
 ## 2026-09-17 — feature — feat(reversals): processa REFUND, ROLLBACK e pendências de referência
 
 - Efeito: adiciona validação de referência, crédito/débito inverso, proteção de reversão duplicada no banco e persistência de operações que aguardam a referência.

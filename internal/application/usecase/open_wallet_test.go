@@ -145,6 +145,10 @@ func (r *fakeTxRepo) FindByID(ctx context.Context, id wagertx.ID) (*wagertx.Wage
 	return cloneWagerTx(tx), nil
 }
 
+func (r *fakeTxRepo) FindByIDForUpdate(ctx context.Context, id wagertx.ID) (*wagertx.WagerTransaction, error) {
+	return r.FindByID(ctx, id)
+}
+
 func (r *fakeTxRepo) FindByProviderAndExternalID(ctx context.Context, providerID, externalID string) (*wagertx.WagerTransaction, error) {
 	for _, tx := range r.byID {
 		if tx.ProviderID() == providerID && tx.ExternalID() == externalID {
@@ -170,6 +174,19 @@ func (r *fakeTxRepo) FindProcessedReversalByReference(ctx context.Context, refer
 		}
 	}
 	return nil, ports.ErrNotFound
+}
+
+func (r *fakeTxRepo) ListPendingReferenceIDs(ctx context.Context, limit int) ([]wagertx.ID, error) {
+	ids := make([]wagertx.ID, 0, limit)
+	for id, tx := range r.byID {
+		if tx.Status() == wagertx.StatusPendingReference {
+			ids = append(ids, id)
+			if len(ids) == limit {
+				break
+			}
+		}
+	}
+	return ids, nil
 }
 
 func (r *fakeTxRepo) Create(ctx context.Context, tx *wagertx.WagerTransaction) error {

@@ -124,6 +124,74 @@ func (uc *ProcessWagerTransaction) Execute(ctx context.Context, in ProcessWagerT
 	return nil, ErrTooManyRetries
 }
 
+// ResumePendingReference tenta concluir uma transação persistida que aguardava
+// sua referência. O lock de linha impede que dois workers a liquidem juntos.
+func (uc *ProcessWagerTransaction) ResumePendingReference(ctx context.Context, id wagertx.ID) error {
+	return uc.uow.Execute(ctx, func(txCtx context.Context) error {
+		tx, err := uc.txRepo.FindByIDForUpdate(txCtx, id)
+		if err != nil || tx.Status() != wagertx.StatusPendingReference {
+			return err
+		}
+		w, err := uc.walletRepo.FindByID(txCtx, tx.WalletID())
+		if err != nil {
+			return err
+		}
+		reference, err := uc.txRepo.FindByProviderAndExternalID(txCtx, tx.ProviderID(), tx.ReferenceExternalID())
+		if errors.Is(err, ports.ErrNotFound) || (err == nil && reference.Status() != wagertx.StatusProcessed) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		now := uc.now().UTC()
+		correlationID := string(tx.ID())
+		if failureCode := validateReference(tx.Kind(), tx, reference); failureCode != "" {
+			_, err := uc.reject(txCtx, tx, w, failureCode, now, correlationID)
+			return err
+		}
+		if tx.Kind() == wagertx.KindRefund || tx.Kind() == wagertx.KindRollback {
+			alreadyReversed, err := uc.txRepo.FindProcessedReversalByReference(txCtx, reference.ID())
+			if err != nil && !errors.Is(err, ports.ErrNotFound) {
+				return err
+			}
+			if alreadyReversed != nil {
+				_, err := uc.reject(txCtx, tx, w, failureCodeReferenceAlreadyReversed, now, correlationID)
+				return err
+			}
+		}
+		if err := tx.ResolveReference(reference.ID(), now); err != nil {
+			return err
+		}
+		previousVersion, balanceBefore := w.Version(), w.Balance()
+		switch tx.Kind() {
+		case wagertx.KindWin, wagertx.KindRefund:
+			if err := w.Credit(tx.Money(), now); err != nil {
+				return err
+			}
+			_, err = uc.settle(txCtx, tx, w, previousVersion, balanceBefore, ledger.DirectionCredit, tx.Money(), now, correlationID)
+			return err
+		case wagertx.KindRollback:
+			if reference.Kind() == wagertx.KindWin || reference.Kind() == wagertx.KindRefund {
+				if err := w.Debit(tx.Money(), now); err != nil {
+					if errors.Is(err, wallet.ErrInsufficientBalance) {
+						_, err = uc.reject(txCtx, tx, w, failureCodeReversalInsufficientBalance, now, correlationID)
+					}
+					return err
+				}
+				_, err = uc.settle(txCtx, tx, w, previousVersion, balanceBefore, ledger.DirectionDebit, tx.Money(), now, correlationID)
+				return err
+			}
+			if err := w.Credit(tx.Money(), now); err != nil {
+				return err
+			}
+			_, err = uc.settle(txCtx, tx, w, previousVersion, balanceBefore, ledger.DirectionCredit, tx.Money(), now, correlationID)
+			return err
+		default:
+			return ErrUnsupportedKind
+		}
+	})
+}
+
 func (uc *ProcessWagerTransaction) attempt(ctx context.Context, in ProcessWagerTransactionInput, kind wagertx.Kind, hash string) (*ProcessWagerTransactionOutput, error) {
 	if out, found, err := uc.resolveExisting(ctx, in, hash); err != nil {
 		return nil, err

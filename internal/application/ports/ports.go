@@ -24,9 +24,11 @@ type WalletRepository interface {
 
 type WagerTransactionRepository interface {
 	FindByID(ctx context.Context, id wagertx.ID) (*wagertx.WagerTransaction, error)
+	FindByIDForUpdate(ctx context.Context, id wagertx.ID) (*wagertx.WagerTransaction, error)
 	FindByProviderAndExternalID(ctx context.Context, providerID, externalID string) (*wagertx.WagerTransaction, error)
 	FindByIdempotencyKey(ctx context.Context, idempotencyKey string) (*wagertx.WagerTransaction, error)
 	FindProcessedReversalByReference(ctx context.Context, referenceID wagertx.ID) (*wagertx.WagerTransaction, error)
+	ListPendingReferenceIDs(ctx context.Context, limit int) ([]wagertx.ID, error)
 	Create(ctx context.Context, tx *wagertx.WagerTransaction) error
 	Update(ctx context.Context, tx *wagertx.WagerTransaction) error
 }
