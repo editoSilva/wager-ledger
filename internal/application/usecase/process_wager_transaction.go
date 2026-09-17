@@ -11,6 +11,7 @@ import (
 	"github.com/editosilva/wager-ledger/internal/domain/money"
 	"github.com/editosilva/wager-ledger/internal/domain/wagertx"
 	"github.com/editosilva/wager-ledger/internal/domain/wallet"
+	"github.com/editosilva/wager-ledger/internal/observability"
 )
 
 var (
@@ -25,6 +26,7 @@ const (
 	failureCodeReferenceNotProcessable     = "REFERENCE_NOT_PROCESSABLE"
 	failureCodeReferenceAlreadyReversed    = "REFERENCE_ALREADY_REVERSED"
 	failureCodeReversalInsufficientBalance = "REVERSAL_INSUFFICIENT_BALANCE"
+	failureCodeReferenceExpired            = "REFERENCE_EXPIRED"
 )
 
 type ProcessWagerTransactionInput struct {
@@ -55,6 +57,7 @@ type ProcessWagerTransaction struct {
 	ledgerRepo ports.LedgerRepository
 	outboxRepo ports.OutboxRepository
 	idGen      ports.IDGenerator
+	metrics    *observability.Metrics
 	now        func() time.Time
 	maxRetries int
 }
@@ -66,6 +69,7 @@ func NewProcessWagerTransaction(
 	ledgerRepo ports.LedgerRepository,
 	outboxRepo ports.OutboxRepository,
 	idGen ports.IDGenerator,
+	metrics *observability.Metrics,
 ) *ProcessWagerTransaction {
 	return &ProcessWagerTransaction{
 		uow:        uow,
@@ -74,6 +78,7 @@ func NewProcessWagerTransaction(
 		ledgerRepo: ledgerRepo,
 		outboxRepo: outboxRepo,
 		idGen:      idGen,
+		metrics:    metrics,
 		now:        time.Now,
 		maxRetries: 5,
 	}
@@ -114,14 +119,31 @@ func (uc *ProcessWagerTransaction) Execute(ctx context.Context, in ProcessWagerT
 			return nil
 		})
 		if execErr == nil {
+			uc.recordOutcome(kind, out)
 			return out, nil
 		}
 		if errors.Is(execErr, ports.ErrOptimisticLock) || errors.Is(execErr, ports.ErrAlreadyExists) {
+			if uc.metrics != nil {
+				uc.metrics.OptimisticLockRetriesTotal.Inc()
+			}
 			continue
 		}
 		return nil, execErr
 	}
+	if uc.metrics != nil {
+		uc.metrics.TooManyRetriesTotal.Inc()
+	}
 	return nil, ErrTooManyRetries
+}
+
+func (uc *ProcessWagerTransaction) recordOutcome(kind wagertx.Kind, out *ProcessWagerTransactionOutput) {
+	if uc.metrics == nil || out == nil {
+		return
+	}
+	uc.metrics.WagerTransactionsTotal.WithLabelValues(out.Status, string(kind)).Inc()
+	if out.IdempotentReplay {
+		uc.metrics.IdempotentReplaysTotal.Inc()
+	}
 }
 
 // ExecuteWithin executa dentro de uma transação já aberta, para que o
@@ -137,7 +159,11 @@ func (uc *ProcessWagerTransaction) ExecuteWithin(ctx context.Context, in Process
 	if err != nil {
 		return nil, err
 	}
-	return uc.attempt(ctx, in, kind, hash)
+	out, err := uc.attempt(ctx, in, kind, hash)
+	if err == nil {
+		uc.recordOutcome(kind, out)
+	}
+	return out, err
 }
 
 // ResumePendingReference tenta concluir uma transação persistida que aguardava
@@ -205,6 +231,33 @@ func (uc *ProcessWagerTransaction) ResumePendingReference(ctx context.Context, i
 		default:
 			return ErrUnsupportedKind
 		}
+	})
+}
+
+// ExpirePendingReference finaliza uma transação que aguardava referência havia
+// tempo demais além do TTL configurado, transicionando-a para FAILED. O lock de
+// linha impede que a expiração colida com a chegada tardia da referência.
+func (uc *ProcessWagerTransaction) ExpirePendingReference(ctx context.Context, id wagertx.ID) error {
+	return uc.uow.Execute(ctx, func(txCtx context.Context) error {
+		tx, err := uc.txRepo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return err
+		}
+		if tx.Status() != wagertx.StatusPendingReference {
+			return nil
+		}
+		now := uc.now().UTC()
+		if err := tx.MarkFailed(failureCodeReferenceExpired, now); err != nil {
+			return err
+		}
+		if err := uc.txRepo.Update(txCtx, tx); err != nil {
+			return err
+		}
+		expiredEvent := event.NewWagerTransactionExpired(uc.idGen.NewID(), string(tx.WalletID()), string(tx.ID()), now, event.WagerTransactionExpiredData{
+			TransactionID: string(tx.ID()), WalletID: string(tx.WalletID()), ProviderID: tx.ProviderID(),
+			ExternalID: tx.ExternalID(), ReferenceExternalID: tx.ReferenceExternalID(), FailureCode: failureCodeReferenceExpired,
+		})
+		return uc.outboxRepo.Create(txCtx, expiredEvent)
 	})
 }
 

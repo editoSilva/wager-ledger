@@ -57,3 +57,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: `/health/ready` passa a verificar conectividade real com Postgres e SQS com timeout, e `/metrics` expõe o registro Prometheus para scraping.
 - Arquivos: `internal/infra/http/health.go`, `internal/infra/http/health_test.go`, `internal/infra/http/module.go`, `internal/infra/postgres/module.go`, `internal/infra/postgres/readiness.go`, `internal/infra/sqs/readiness.go`.
+
+## 2026-09-17 — feature — feat(wagering): expira referências pendentes após TTL e consulta por provedor/externalId
+
+- Efeito: worker de retomada passa a expirar transações PENDING_REFERENCE além do TTL configurável, emite evento WagerTransactionExpired, instrumenta métricas de retries/replays/expiração e expõe GET por providerId+externalId.
+- Arquivos: `internal/domain/event/event.go`, `internal/application/usecase/process_wager_transaction.go`, `internal/application/usecase/process_wager_transaction_test.go`, `internal/application/usecase/reference_retry_worker.go`, `internal/application/usecase/open_wallet_test.go`, `internal/application/ports/ports.go`, `internal/config/config.go`, `internal/infra/postgres/wagertx_repository.go`, `internal/infra/http/wagering.go`.

@@ -66,6 +66,13 @@ func RegisterWageringRoutes(
 		}),
 		authenticate,
 	))
+
+	mux.Handle("GET /providers/{providerId}/wagering/transactions/{externalId}", chain(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleGetWagerTransactionByProviderAndExternalID(w, r, txRepo)
+		}),
+		authenticate,
+	))
 }
 
 func handleProcessWagerTransaction(w http.ResponseWriter, r *http.Request, uc *usecase.ProcessWagerTransaction) {
@@ -164,6 +171,42 @@ func handleGetWagerTransaction(w http.ResponseWriter, r *http.Request, repo port
 	identity, ok := idp.IdentityFromContext(r.Context())
 	if !ok || (!identity.HasRole("internal") && (!identity.HasRole("provider") || tx.ProviderID() == "" || tx.ProviderID() != identity.ClientID)) {
 		writeJSONError(w, http.StatusForbidden, "forbidden", "acesso restrito às próprias transações do provedor")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(wagerTransactionResponse{
+		TransactionID:         string(tx.ID()),
+		ProviderID:            tx.ProviderID(),
+		ExternalTransactionID: tx.ExternalID(),
+		WalletID:              string(tx.WalletID()),
+		PlayerID:              string(tx.PlayerID()),
+		Kind:                  string(tx.Kind()),
+		Status:                string(tx.Status()),
+		Money:                 tx.Money(),
+		FailureCode:           tx.FailureCode(),
+		FinancialResult:       tx.FinancialResult(),
+	})
+}
+
+func handleGetWagerTransactionByProviderAndExternalID(w http.ResponseWriter, r *http.Request, repo ports.WagerTransactionRepository) {
+	providerID := r.PathValue("providerId")
+	externalID := r.PathValue("externalId")
+
+	identity, ok := idp.IdentityFromContext(r.Context())
+	if !ok || (!identity.HasRole("internal") && (!identity.HasRole("provider") || identity.ClientID != providerID)) {
+		writeJSONError(w, http.StatusForbidden, "forbidden", "acesso restrito às próprias transações do provedor")
+		return
+	}
+
+	tx, err := repo.FindByProviderAndExternalID(r.Context(), providerID, externalID)
+	if err != nil {
+		if errors.Is(err, ports.ErrNotFound) {
+			writeJSONError(w, http.StatusNotFound, "not_found", "transação não encontrada")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "erro ao buscar transação")
 		return
 	}
 

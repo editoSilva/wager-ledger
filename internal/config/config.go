@@ -8,17 +8,18 @@ import (
 )
 
 type Config struct {
-	HTTPPort        string
-	Environment     string
-	ShutdownTimeout time.Duration
-	DatabaseURL     string
-	OIDCIssuerURL   string
-	OIDCJWKSURL     string
-	AWSRegion       string
-	AWSAccessKeyID  string
-	AWSSecretKey    string
-	SQSEndpoint     string
-	SQSQueueURL     string
+	HTTPPort            string
+	Environment         string
+	ShutdownTimeout     time.Duration
+	DatabaseURL         string
+	OIDCIssuerURL       string
+	OIDCJWKSURL         string
+	AWSRegion           string
+	AWSAccessKeyID      string
+	AWSSecretKey        string
+	SQSEndpoint         string
+	SQSQueueURL         string
+	ReferencePendingTTL time.Duration
 }
 
 func Load() (Config, error) {
@@ -42,6 +43,13 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("config: SHUTDOWN_TIMEOUT inválida (%q): %w", shutdownTimeoutRaw, err)
 	}
 	cfg.ShutdownTimeout = shutdownTimeout
+
+	referencePendingTTLRaw := getEnv("REFERENCE_PENDING_TTL", "15m")
+	referencePendingTTL, err := time.ParseDuration(referencePendingTTLRaw)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: REFERENCE_PENDING_TTL inválida (%q): %w", referencePendingTTLRaw, err)
+	}
+	cfg.ReferencePendingTTL = referencePendingTTL
 
 	return cfg, nil
 }

@@ -90,6 +90,28 @@ func (r *WagerTransactionRepository) ListPendingReferenceIDs(ctx context.Context
 	return ids, rows.Err()
 }
 
+func (r *WagerTransactionRepository) ListStalePendingReferenceIDs(ctx context.Context, olderThan time.Time, limit int) ([]wagertx.ID, error) {
+	q := querierFrom(ctx, r.pool)
+	rows, err := q.Query(ctx,
+		`SELECT id FROM wager_transactions WHERE status = 'PENDING_REFERENCE' AND created_at < $1 ORDER BY created_at, id LIMIT $2`,
+		olderThan, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]wagertx.ID, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, wagertx.ID(id))
+	}
+	return ids, rows.Err()
+}
+
 func (r *WagerTransactionRepository) Create(ctx context.Context, tx *wagertx.WagerTransaction) error {
 	q := querierFrom(ctx, r.pool)
 

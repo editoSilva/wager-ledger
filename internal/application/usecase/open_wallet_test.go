@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/editosilva/wager-ledger/internal/application/ports"
 	"github.com/editosilva/wager-ledger/internal/domain/event"
@@ -180,6 +181,19 @@ func (r *fakeTxRepo) ListPendingReferenceIDs(ctx context.Context, limit int) ([]
 	ids := make([]wagertx.ID, 0, limit)
 	for id, tx := range r.byID {
 		if tx.Status() == wagertx.StatusPendingReference {
+			ids = append(ids, id)
+			if len(ids) == limit {
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
+func (r *fakeTxRepo) ListStalePendingReferenceIDs(ctx context.Context, olderThan time.Time, limit int) ([]wagertx.ID, error) {
+	ids := make([]wagertx.ID, 0, limit)
+	for id, tx := range r.byID {
+		if tx.Status() == wagertx.StatusPendingReference && tx.CreatedAt().Before(olderThan) {
 			ids = append(ids, id)
 			if len(ids) == limit {
 				break

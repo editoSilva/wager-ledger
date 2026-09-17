@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/editosilva/wager-ledger/internal/domain/event"
 	"github.com/editosilva/wager-ledger/internal/domain/ledger"
@@ -29,6 +30,7 @@ type WagerTransactionRepository interface {
 	FindByIdempotencyKey(ctx context.Context, idempotencyKey string) (*wagertx.WagerTransaction, error)
 	FindProcessedReversalByReference(ctx context.Context, referenceID wagertx.ID) (*wagertx.WagerTransaction, error)
 	ListPendingReferenceIDs(ctx context.Context, limit int) ([]wagertx.ID, error)
+	ListStalePendingReferenceIDs(ctx context.Context, olderThan time.Time, limit int) ([]wagertx.ID, error)
 	Create(ctx context.Context, tx *wagertx.WagerTransaction) error
 	Update(ctx context.Context, tx *wagertx.WagerTransaction) error
 }
