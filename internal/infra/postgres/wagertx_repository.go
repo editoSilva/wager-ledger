@@ -37,6 +37,12 @@ func (r *WagerTransactionRepository) FindByID(ctx context.Context, id wagertx.ID
 	return scanWagerTx(row)
 }
 
+func (r *WagerTransactionRepository) FindByIDForUpdate(ctx context.Context, id wagertx.ID) (*wagertx.WagerTransaction, error) {
+	q := querierFrom(ctx, r.pool)
+	row := q.QueryRow(ctx, `SELECT `+wagerTxColumns+` FROM wager_transactions WHERE id = $1 FOR UPDATE`, string(id))
+	return scanWagerTx(row)
+}
+
 func (r *WagerTransactionRepository) FindByProviderAndExternalID(ctx context.Context, providerID, externalID string) (*wagertx.WagerTransaction, error) {
 	q := querierFrom(ctx, r.pool)
 	row := q.QueryRow(ctx,
@@ -53,6 +59,57 @@ func (r *WagerTransactionRepository) FindByIdempotencyKey(ctx context.Context, i
 		idempotencyKey,
 	)
 	return scanWagerTx(row)
+}
+
+func (r *WagerTransactionRepository) FindProcessedReversalByReference(ctx context.Context, referenceID wagertx.ID) (*wagertx.WagerTransaction, error) {
+	q := querierFrom(ctx, r.pool)
+	row := q.QueryRow(ctx,
+		`SELECT `+wagerTxColumns+` FROM wager_transactions
+		 WHERE resolved_reference_id = $1 AND kind IN ('REFUND', 'ROLLBACK') AND status = 'PROCESSED'`,
+		string(referenceID),
+	)
+	return scanWagerTx(row)
+}
+
+func (r *WagerTransactionRepository) ListPendingReferenceIDs(ctx context.Context, limit int) ([]wagertx.ID, error) {
+	q := querierFrom(ctx, r.pool)
+	rows, err := q.Query(ctx, `SELECT id FROM wager_transactions WHERE status = 'PENDING_REFERENCE' ORDER BY created_at, id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]wagertx.ID, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, wagertx.ID(id))
+	}
+	return ids, rows.Err()
+}
+
+func (r *WagerTransactionRepository) ListStalePendingReferenceIDs(ctx context.Context, olderThan time.Time, limit int) ([]wagertx.ID, error) {
+	q := querierFrom(ctx, r.pool)
+	rows, err := q.Query(ctx,
+		`SELECT id FROM wager_transactions WHERE status = 'PENDING_REFERENCE' AND created_at < $1 ORDER BY created_at, id LIMIT $2`,
+		olderThan, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]wagertx.ID, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, wagertx.ID(id))
+	}
+	return ids, rows.Err()
 }
 
 func (r *WagerTransactionRepository) Create(ctx context.Context, tx *wagertx.WagerTransaction) error {

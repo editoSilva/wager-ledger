@@ -16,6 +16,7 @@ import (
 
 const testIssuer = "http://test-issuer/realms/wager-ledger"
 const testKid = "test-key-1"
+const testAudience = "wager-ledger-api"
 
 func testEnv(t *testing.T) (*KeySet, *rsa.PrivateKey) {
 	t.Helper()
@@ -64,6 +65,7 @@ func validClaims(clientID string, roles []string, expiresIn time.Duration) claim
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    testIssuer,
 			Subject:   "service-account-" + clientID,
+			Audience:  jwt.ClaimStrings{testAudience},
 			ExpiresAt: jwt.NewNumericDate(now.Add(expiresIn)),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
@@ -88,7 +90,7 @@ func handlerRecordingIdentity(t *testing.T) (http.Handler, *Identity) {
 func TestAuthenticate_ValidToken(t *testing.T) {
 	keySet, priv := testEnv(t)
 	next, captured := handlerRecordingIdentity(t)
-	mw := Authenticate(keySet, testIssuer)(next)
+	mw := Authenticate(keySet, testIssuer, testAudience)(next)
 
 	token := signToken(t, priv, validClaims("provider-a", []string{"provider"}, time.Hour))
 
@@ -112,7 +114,7 @@ func TestAuthenticate_ValidToken(t *testing.T) {
 func TestAuthenticate_MissingHeader(t *testing.T) {
 	keySet, _ := testEnv(t)
 	next, _ := handlerRecordingIdentity(t)
-	mw := Authenticate(keySet, testIssuer)(next)
+	mw := Authenticate(keySet, testIssuer, testAudience)(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/wallets/1", nil)
 	rec := httptest.NewRecorder()
@@ -126,7 +128,7 @@ func TestAuthenticate_MissingHeader(t *testing.T) {
 func TestAuthenticate_MalformedHeader(t *testing.T) {
 	keySet, _ := testEnv(t)
 	next, _ := handlerRecordingIdentity(t)
-	mw := Authenticate(keySet, testIssuer)(next)
+	mw := Authenticate(keySet, testIssuer, testAudience)(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/wallets/1", nil)
 	req.Header.Set("Authorization", "Token abc123")
@@ -141,7 +143,7 @@ func TestAuthenticate_MalformedHeader(t *testing.T) {
 func TestAuthenticate_ExpiredToken(t *testing.T) {
 	keySet, priv := testEnv(t)
 	next, _ := handlerRecordingIdentity(t)
-	mw := Authenticate(keySet, testIssuer)(next)
+	mw := Authenticate(keySet, testIssuer, testAudience)(next)
 
 	token := signToken(t, priv, validClaims("provider-a", []string{"provider"}, -time.Hour))
 
@@ -158,7 +160,7 @@ func TestAuthenticate_ExpiredToken(t *testing.T) {
 func TestAuthenticate_WrongSignature(t *testing.T) {
 	keySet, _ := testEnv(t)
 	next, _ := handlerRecordingIdentity(t)
-	mw := Authenticate(keySet, testIssuer)(next)
+	mw := Authenticate(keySet, testIssuer, testAudience)(next)
 
 	otherPriv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -179,7 +181,7 @@ func TestAuthenticate_WrongSignature(t *testing.T) {
 func TestAuthenticate_WrongIssuer(t *testing.T) {
 	keySet, priv := testEnv(t)
 	next, _ := handlerRecordingIdentity(t)
-	mw := Authenticate(keySet, testIssuer)(next)
+	mw := Authenticate(keySet, testIssuer, testAudience)(next)
 
 	c := validClaims("provider-a", []string{"provider"}, time.Hour)
 	c.Issuer = "http://outro-issuer/realms/outro"
@@ -195,11 +197,49 @@ func TestAuthenticate_WrongIssuer(t *testing.T) {
 	}
 }
 
+func TestAuthenticate_WrongAudience(t *testing.T) {
+	keySet, priv := testEnv(t)
+	next, _ := handlerRecordingIdentity(t)
+	mw := Authenticate(keySet, testIssuer, testAudience)(next)
+
+	c := validClaims("provider-a", []string{"provider"}, time.Hour)
+	c.Audience = jwt.ClaimStrings{"outro-serviço"}
+	token := signToken(t, priv, c)
+
+	req := httptest.NewRequest(http.MethodGet, "/wallets/1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, esperado 401 (audience não confere)", rec.Code)
+	}
+}
+
+func TestAuthenticate_MissingExpiration(t *testing.T) {
+	keySet, priv := testEnv(t)
+	next, _ := handlerRecordingIdentity(t)
+	mw := Authenticate(keySet, testIssuer, testAudience)(next)
+
+	c := validClaims("provider-a", []string{"provider"}, time.Hour)
+	c.ExpiresAt = nil
+	token := signToken(t, priv, c)
+
+	req := httptest.NewRequest(http.MethodGet, "/wallets/1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, esperado 401 (token sem exp)", rec.Code)
+	}
+}
+
 func TestRequireRole_Allowed(t *testing.T) {
 	keySet, priv := testEnv(t)
 	inner, _ := handlerRecordingIdentity(t)
 	protected := RequireRole("internal")(inner)
-	mw := Authenticate(keySet, testIssuer)(protected)
+	mw := Authenticate(keySet, testIssuer, testAudience)(protected)
 
 	token := signToken(t, priv, validClaims("wager-internal", []string{"internal"}, time.Hour))
 
@@ -217,7 +257,7 @@ func TestRequireRole_Forbidden(t *testing.T) {
 	keySet, priv := testEnv(t)
 	inner, _ := handlerRecordingIdentity(t)
 	protected := RequireRole("internal")(inner)
-	mw := Authenticate(keySet, testIssuer)(protected)
+	mw := Authenticate(keySet, testIssuer, testAudience)(protected)
 
 	token := signToken(t, priv, validClaims("provider-a", []string{"provider"}, time.Hour))
 

@@ -2,6 +2,7 @@ package money
 
 import (
 	"errors"
+	"math"
 	"testing"
 )
 
@@ -209,5 +210,45 @@ func TestOverflow_Add(t *testing.T) {
 
 	if _, err := huge.Add(one); !errors.Is(err, ErrOverflow) {
 		t.Errorf("esperava ErrOverflow, got %v", err)
+	}
+}
+
+func TestZeroValue_RejectsOperationsWithEmptyCurrency(t *testing.T) {
+	var zero Money
+	other, _ := FromDecimalString("10.00", "BRL")
+
+	if _, err := zero.Add(other); !errors.Is(err, ErrEmptyCurrency) {
+		t.Errorf("Add com Money zero-value deveria falhar com ErrEmptyCurrency, got %v", err)
+	}
+	if _, err := zero.Add(zero); !errors.Is(err, ErrEmptyCurrency) {
+		t.Errorf("Add entre dois Money zero-value deveria falhar com ErrEmptyCurrency, got %v", err)
+	}
+	if _, err := zero.Sub(other); !errors.Is(err, ErrEmptyCurrency) {
+		t.Errorf("Sub com Money zero-value deveria falhar com ErrEmptyCurrency, got %v", err)
+	}
+	if _, err := zero.Compare(other); !errors.Is(err, ErrEmptyCurrency) {
+		t.Errorf("Compare com Money zero-value deveria falhar com ErrEmptyCurrency, got %v", err)
+	}
+	if _, err := zero.Negate(); !errors.Is(err, ErrEmptyCurrency) {
+		t.Errorf("Negate com Money zero-value deveria falhar com ErrEmptyCurrency, got %v", err)
+	}
+	if _, err := zero.MarshalJSON(); !errors.Is(err, ErrEmptyCurrency) {
+		t.Errorf("MarshalJSON com Money zero-value deveria falhar com ErrEmptyCurrency, got %v", err)
+	}
+}
+
+func TestNormalizeCurrency_RejectsNonISOCode(t *testing.T) {
+	if _, err := FromDecimalString("10.00", "ZZZ"); !errors.Is(err, ErrInvalidCurrency) {
+		t.Errorf("código de três letras fora do ISO 4217 deveria ser rejeitado, got %v", err)
+	}
+}
+
+func TestDecimalString_MinInt64_DoesNotOverflow(t *testing.T) {
+	m, err := FromMinorUnits(math.MinInt64, "BRL")
+	if err != nil {
+		t.Fatalf("FromMinorUnits erro inesperado: %v", err)
+	}
+	if got := m.DecimalString(); got != "-92233720368547758.08" {
+		t.Errorf("DecimalString(MinInt64) = %s, esperado -92233720368547758.08", got)
 	}
 }

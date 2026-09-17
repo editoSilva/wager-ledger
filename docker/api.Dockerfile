@@ -28,3 +28,14 @@ USER nonroot:nonroot
 EXPOSE 8080
 
 ENTRYPOINT ["/api"]
+
+FROM base AS migration-build
+RUN go install -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.1
+
+FROM debian:bookworm-slim AS migrator
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=migration-build /go/bin/migrate /usr/local/bin/migrate
+COPY migrations /migrations
+USER 65532:65532
+ENTRYPOINT ["migrate"]

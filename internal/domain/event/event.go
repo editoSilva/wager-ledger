@@ -11,6 +11,7 @@ const (
 	TypeWagerTransactionRejected         = "WagerTransactionRejected"
 	TypeWalletBalanceChanged             = "WalletBalanceChanged"
 	TypeWagerTransactionPendingReference = "WagerTransactionPendingReference"
+	TypeWagerTransactionExpired          = "WagerTransactionExpired"
 )
 
 type Event struct {
@@ -87,6 +88,22 @@ type WagerTransactionPendingReferenceData struct {
 func NewWagerTransactionPendingReference(id, aggregateID, correlationID string, occurredAt time.Time, data WagerTransactionPendingReferenceData) Event {
 	return Event{
 		ID: id, Type: TypeWagerTransactionPendingReference, AggregateID: aggregateID,
+		CorrelationID: correlationID, OccurredAt: occurredAt, Version: 1, Data: data,
+	}
+}
+
+type WagerTransactionExpiredData struct {
+	TransactionID       string `json:"transactionId"`
+	WalletID            string `json:"walletId"`
+	ProviderID          string `json:"providerId"`
+	ExternalID          string `json:"externalTransactionId"`
+	ReferenceExternalID string `json:"referenceExternalTransactionId"`
+	FailureCode         string `json:"failureCode"`
+}
+
+func NewWagerTransactionExpired(id, aggregateID, correlationID string, occurredAt time.Time, data WagerTransactionExpiredData) Event {
+	return Event{
+		ID: id, Type: TypeWagerTransactionExpired, AggregateID: aggregateID,
 		CorrelationID: correlationID, OccurredAt: occurredAt, Version: 1, Data: data,
 	}
 }

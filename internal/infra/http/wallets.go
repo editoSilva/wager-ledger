@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/editosilva/wager-ledger/internal/application/ports"
 	"github.com/editosilva/wager-ledger/internal/application/usecase"
@@ -27,6 +28,8 @@ func RegisterWalletRoutes(
 	mux *http.ServeMux,
 	openWallet *usecase.OpenWallet,
 	walletRepo ports.WalletRepository,
+	ledgerRepo ports.LedgerRepository,
+	reconcileWallet *usecase.ReconcileWallet,
 	authenticate func(http.Handler) http.Handler,
 	requireInternal func(http.Handler) http.Handler,
 ) {
@@ -41,7 +44,21 @@ func RegisterWalletRoutes(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			handleGetWallet(w, r, walletRepo)
 		}),
-		authenticate,
+		authenticate, requireInternal,
+	))
+
+	mux.Handle("GET /wallets/{id}/ledger", chain(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleGetWalletLedger(w, r, ledgerRepo)
+		}),
+		authenticate, requireInternal,
+	))
+
+	mux.Handle("POST /wallets/{id}/reconciliation", chain(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleReconcileWallet(w, r, reconcileWallet)
+		}),
+		authenticate, requireInternal,
 	))
 }
 
@@ -98,6 +115,95 @@ func handleGetWallet(w http.ResponseWriter, r *http.Request, repo ports.WalletRe
 		PlayerID: string(found.PlayerID()),
 		Balance:  found.Balance(),
 		Version:  found.Version(),
+	})
+}
+
+type ledgerEntryResponse struct {
+	ID            string      `json:"id"`
+	TransactionID string      `json:"transactionId"`
+	Direction     string      `json:"direction"`
+	Amount        money.Money `json:"amount"`
+	BalanceBefore money.Money `json:"balanceBefore"`
+	BalanceAfter  money.Money `json:"balanceAfter"`
+	CreatedAt     string      `json:"createdAt"`
+}
+
+type ledgerPageResponse struct {
+	Entries    []ledgerEntryResponse `json:"entries"`
+	NextCursor string                `json:"nextCursor,omitempty"`
+}
+
+const maxLedgerPageSize = 200
+
+func handleGetWalletLedger(w http.ResponseWriter, r *http.Request, ledgerRepo ports.LedgerRepository) {
+	id := wallet.ID(r.PathValue("id"))
+	cursor := r.URL.Query().Get("cursor")
+
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > maxLedgerPageSize {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "limit deve ser um inteiro positivo até 200")
+			return
+		}
+		limit = parsed
+	}
+
+	entries, nextCursor, err := ledgerRepo.ListByWallet(r.Context(), id, cursor, limit)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_cursor", "cursor inválido: "+err.Error())
+		return
+	}
+
+	out := make([]ledgerEntryResponse, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, ledgerEntryResponse{
+			ID:            string(e.ID()),
+			TransactionID: string(e.TransactionID()),
+			Direction:     string(e.Direction()),
+			Amount:        e.Amount(),
+			BalanceBefore: e.BalanceBefore(),
+			BalanceAfter:  e.BalanceAfter(),
+			CreatedAt:     e.CreatedAt().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(ledgerPageResponse{Entries: out, NextCursor: nextCursor})
+}
+
+type reconciliationResponse struct {
+	WalletID          string      `json:"walletId"`
+	StoredBalance     money.Money `json:"storedBalance"`
+	CalculatedBalance money.Money `json:"calculatedBalance"`
+	Difference        money.Money `json:"difference"`
+	Consistent        bool        `json:"consistent"`
+	CheckedEntries    int         `json:"checkedEntries"`
+}
+
+func handleReconcileWallet(w http.ResponseWriter, r *http.Request, uc *usecase.ReconcileWallet) {
+	id := wallet.ID(r.PathValue("id"))
+
+	out, err := uc.Execute(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ports.ErrNotFound) {
+			writeJSONError(w, http.StatusNotFound, "not_found", "carteira não encontrada")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "erro ao reconciliar carteira")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(reconciliationResponse{
+		WalletID:          out.WalletID,
+		StoredBalance:     out.StoredBalance,
+		CalculatedBalance: out.CalculatedBalance,
+		Difference:        out.Difference,
+		Consistent:        out.Consistent,
+		CheckedEntries:    out.CheckedEntries,
 	})
 }
 

@@ -43,6 +43,30 @@ echo "Criando roles de realm 'provider' e 'internal'..."
 api POST "/realms/$REALM/roles" '{"name":"provider"}' > /dev/null 2>&1 || true
 api POST "/realms/$REALM/roles" '{"name":"internal"}' > /dev/null 2>&1 || true
 
+echo "Criando client scope de audience 'wager-ledger-api-audience'..."
+api POST "/realms/$REALM/client-scopes" '{
+  "name": "wager-ledger-api-audience",
+  "protocol": "openid-connect",
+  "attributes": {"include.in.token.scope":"true","display.on.consent.screen":"false"}
+}' > /dev/null 2>&1 || true
+
+AUDIENCE_SCOPE_ID="$(api GET "/realms/$REALM/client-scopes" | jq -r '.[] | select(.name=="wager-ledger-api-audience") | .id')"
+
+api POST "/realms/$REALM/client-scopes/$AUDIENCE_SCOPE_ID/protocol-mappers/models" '{
+  "name": "wager-ledger-api-audience-mapper",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-audience-mapper",
+  "config": {
+    "included.custom.audience": "wager-ledger-api",
+    "id.token.claim": "false",
+    "access.token.claim": "true"
+  }
+}' > /dev/null 2>&1 || true
+
+echo "Tornando 'wager-ledger-api-audience' escopo padrão do realm..."
+curl -sf -X PUT "$KEYCLOAK_URL/admin/realms/$REALM/default-default-client-scopes/$AUDIENCE_SCOPE_ID" \
+  -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1 || true
+
 create_service_client() {
   local client_id="$1" secret="$2" role="$3"
 

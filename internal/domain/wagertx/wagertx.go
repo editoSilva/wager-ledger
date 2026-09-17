@@ -24,7 +24,7 @@ var (
 	ErrLossAmountMustBeZero = errors.New("wagertx: LOSS exige money.amount igual a 0.00")
 	ErrAmountMustBePositive = errors.New("wagertx: este tipo de operação exige valor maior que zero")
 	ErrReferenceRequired    = errors.New("wagertx: referenceExternalTransactionId é obrigatório para REFUND/ROLLBACK")
-	ErrReferenceNotAllowed  = errors.New("wagertx: referenceExternalTransactionId só se aplica a REFUND/ROLLBACK")
+	ErrReferenceNotAllowed  = errors.New("wagertx: referenceExternalTransactionId só se aplica a WIN, REFUND ou ROLLBACK")
 	ErrEmptyFailureCode     = errors.New("wagertx: failureCode vazio")
 	ErrInvalidTransition    = errors.New("wagertx: transição de estado inválida a partir do estado atual")
 )
@@ -93,16 +93,18 @@ const (
 	amountMustBeZero
 )
 
-func rulesFor(kind Kind) (rule amountRule, referenceRequired bool, ok bool) {
+func rulesFor(kind Kind) (rule amountRule, referenceRequired, referenceAllowed bool, ok bool) {
 	switch kind {
-	case KindBet, KindWin:
-		return amountMustBePositive, false, true
+	case KindBet:
+		return amountMustBePositive, false, false, true
+	case KindWin:
+		return amountMustBePositive, false, true, true
 	case KindLoss:
-		return amountMustBeZero, false, true
+		return amountMustBeZero, false, false, true
 	case KindRefund, KindRollback:
-		return amountMustBePositive, true, true
+		return amountMustBePositive, true, true, true
 	default:
-		return 0, false, false
+		return 0, false, false, false
 	}
 }
 
@@ -129,7 +131,7 @@ func NewExternalTransaction(
 	if kind == KindOpening {
 		return nil, ErrOpeningNotExternal
 	}
-	rule, refRequired, known := rulesFor(kind)
+	rule, refRequired, refAllowed, known := rulesFor(kind)
 	if !known {
 		return nil, ErrInvalidKind
 	}
@@ -172,7 +174,7 @@ func NewExternalTransaction(
 	if refRequired && referenceExternalID == "" {
 		return nil, ErrReferenceRequired
 	}
-	if !refRequired && referenceExternalID != "" {
+	if !refAllowed && referenceExternalID != "" {
 		return nil, ErrReferenceNotAllowed
 	}
 
@@ -316,6 +318,17 @@ func (t *WagerTransaction) MarkProcessed(financialResult money.Money, now time.T
 }
 
 func (t *WagerTransaction) MarkRejected(failureCode string, now time.Time) error {
+	return t.markRejected(failureCode, nil, now)
+}
+
+// MarkRejectedWithResult encerra uma operação rejeitada preservando o saldo
+// que foi devolvido ao provedor. Assim, um replay não depende de leituras
+// posteriores da carteira.
+func (t *WagerTransaction) MarkRejectedWithResult(failureCode string, financialResult money.Money, now time.Time) error {
+	return t.markRejected(failureCode, &financialResult, now)
+}
+
+func (t *WagerTransaction) markRejected(failureCode string, financialResult *money.Money, now time.Time) error {
 	if failureCode == "" {
 		return ErrEmptyFailureCode
 	}
@@ -324,6 +337,7 @@ func (t *WagerTransaction) MarkRejected(failureCode string, now time.Time) error
 	}
 	t.status = StatusRejected
 	t.failureCode = failureCode
+	t.financialResult = financialResult
 	t.updatedAt = now
 	return nil
 }

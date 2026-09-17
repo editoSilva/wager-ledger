@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/editosilva/wager-ledger/internal/application/ports"
 	"github.com/editosilva/wager-ledger/internal/domain/event"
@@ -145,6 +146,10 @@ func (r *fakeTxRepo) FindByID(ctx context.Context, id wagertx.ID) (*wagertx.Wage
 	return cloneWagerTx(tx), nil
 }
 
+func (r *fakeTxRepo) FindByIDForUpdate(ctx context.Context, id wagertx.ID) (*wagertx.WagerTransaction, error) {
+	return r.FindByID(ctx, id)
+}
+
 func (r *fakeTxRepo) FindByProviderAndExternalID(ctx context.Context, providerID, externalID string) (*wagertx.WagerTransaction, error) {
 	for _, tx := range r.byID {
 		if tx.ProviderID() == providerID && tx.ExternalID() == externalID {
@@ -163,12 +168,50 @@ func (r *fakeTxRepo) FindByIdempotencyKey(ctx context.Context, idempotencyKey st
 	return nil, ports.ErrNotFound
 }
 
+func (r *fakeTxRepo) FindProcessedReversalByReference(ctx context.Context, referenceID wagertx.ID) (*wagertx.WagerTransaction, error) {
+	for _, tx := range r.byID {
+		if tx.ResolvedReferenceID() == referenceID && tx.Status() == wagertx.StatusProcessed && (tx.Kind() == wagertx.KindRefund || tx.Kind() == wagertx.KindRollback) {
+			return cloneWagerTx(tx), nil
+		}
+	}
+	return nil, ports.ErrNotFound
+}
+
+func (r *fakeTxRepo) ListPendingReferenceIDs(ctx context.Context, limit int) ([]wagertx.ID, error) {
+	ids := make([]wagertx.ID, 0, limit)
+	for id, tx := range r.byID {
+		if tx.Status() == wagertx.StatusPendingReference {
+			ids = append(ids, id)
+			if len(ids) == limit {
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
+func (r *fakeTxRepo) ListStalePendingReferenceIDs(ctx context.Context, olderThan time.Time, limit int) ([]wagertx.ID, error) {
+	ids := make([]wagertx.ID, 0, limit)
+	for id, tx := range r.byID {
+		if tx.Status() == wagertx.StatusPendingReference && tx.CreatedAt().Before(olderThan) {
+			ids = append(ids, id)
+			if len(ids) == limit {
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
 func (r *fakeTxRepo) Create(ctx context.Context, tx *wagertx.WagerTransaction) error {
 	if _, exists := r.byID[tx.ID()]; exists {
 		return ports.ErrAlreadyExists
 	}
 	for _, existing := range r.byID {
 		if existing.ProviderID() == tx.ProviderID() && existing.ExternalID() == tx.ExternalID() {
+			return ports.ErrAlreadyExists
+		}
+		if tx.IdempotencyKey() != "" && existing.IdempotencyKey() == tx.IdempotencyKey() {
 			return ports.ErrAlreadyExists
 		}
 	}
@@ -242,6 +285,26 @@ func (r *fakeLedgerRepo) SumByWallet(ctx context.Context, walletID wallet.ID) (m
 	return sum, nil
 }
 
+func (r *fakeLedgerRepo) CountByWallet(ctx context.Context, walletID wallet.ID) (int, error) {
+	count := 0
+	for _, e := range r.entries {
+		if e.WalletID() == walletID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (r *fakeLedgerRepo) ListByWallet(ctx context.Context, walletID wallet.ID, cursor string, limit int) ([]*ledger.Entry, string, error) {
+	entries := make([]*ledger.Entry, 0)
+	for _, e := range r.entries {
+		if e.WalletID() == walletID {
+			entries = append(entries, e)
+		}
+	}
+	return entries, "", nil
+}
+
 func (r *fakeLedgerRepo) snapshot() []*ledger.Entry {
 	return append([]*ledger.Entry{}, r.entries...)
 }
@@ -256,6 +319,18 @@ type fakeOutboxRepo struct {
 
 func (r *fakeOutboxRepo) Create(ctx context.Context, e event.Event) error {
 	r.events = append(r.events, e)
+	return nil
+}
+
+func (r *fakeOutboxRepo) Claim(ctx context.Context, workerID string, limit int, lockTTL time.Duration) ([]ports.OutboxRecord, error) {
+	return nil, nil
+}
+
+func (r *fakeOutboxRepo) MarkPublished(ctx context.Context, id string) error {
+	return nil
+}
+
+func (r *fakeOutboxRepo) MarkFailed(ctx context.Context, id string, nextAttemptAt time.Time) error {
 	return nil
 }
 

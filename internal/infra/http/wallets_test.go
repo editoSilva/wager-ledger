@@ -20,13 +20,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/editosilva/wager-ledger/internal/application/usecase"
+	"github.com/editosilva/wager-ledger/internal/config"
 	"github.com/editosilva/wager-ledger/internal/infra/idgen"
 	"github.com/editosilva/wager-ledger/internal/infra/idp"
 	"github.com/editosilva/wager-ledger/internal/infra/postgres"
+	"github.com/editosilva/wager-ledger/internal/observability"
 )
 
 const testIssuer = "http://test-issuer/realms/wager-ledger"
 const testKid = "http-test-key"
+const testAudience = "wager-ledger-api"
 
 type jwk struct {
 	Kty string `json:"kty"`
@@ -57,6 +60,7 @@ func signTestToken(t *testing.T, priv *rsa.PrivateKey, clientID string, roles []
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    testIssuer,
 			Subject:   "service-account-" + clientID,
+			Audience:  jwt.ClaimStrings{testAudience},
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
@@ -111,14 +115,17 @@ func testServer(t *testing.T) (baseURL string, priv *rsa.PrivateKey, pool *pgxpo
 	outboxRepo := postgres.NewOutboxRepository(pool)
 	uow := postgres.NewUnitOfWork(pool)
 	idGen := idgen.NewUUIDGenerator()
+	metrics := observability.NewMetrics()
+	logger := observability.NewLogger(config.Config{})
 	openWallet := usecase.NewOpenWallet(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen)
-	processWagerTx := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen)
+	processWagerTx := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen, metrics)
+	reconcileWallet := usecase.NewReconcileWallet(walletRepo, ledgerRepo, metrics, logger)
 
 	mux := NewRouter()
-	authenticate := idp.Authenticate(keySet, testIssuer)
+	authenticate := idp.Authenticate(keySet, testIssuer, testAudience)
 	requireInternal := idp.RequireRole("internal")
 	requireProvider := idp.RequireRole("provider")
-	RegisterWalletRoutes(mux, openWallet, walletRepo, authenticate, requireInternal)
+	RegisterWalletRoutes(mux, openWallet, walletRepo, ledgerRepo, reconcileWallet, authenticate, requireInternal)
 	RegisterWageringRoutes(mux, processWagerTx, txRepo, authenticate, requireProvider)
 
 	srv := httptest.NewServer(mux)
@@ -246,7 +253,7 @@ func TestOpenWallet_HTTP_DuplicateWallet_Returns409(t *testing.T) {
 
 func TestGetWallet_HTTP_NotFound_Returns404(t *testing.T) {
 	baseURL, priv, _ := testServer(t)
-	token := signTestToken(t, priv, "provider-a", []string{"provider"})
+	token := signTestToken(t, priv, "wager-internal", []string{"internal"})
 
 	req, _ := http.NewRequest(http.MethodGet, baseURL+"/wallets/00000000-0000-0000-0000-000000000000", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -259,6 +266,23 @@ func TestGetWallet_HTTP_NotFound_Returns404(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, esperado 404", resp.StatusCode)
+	}
+}
+
+func TestGetWallet_HTTP_ProviderRole_Returns403(t *testing.T) {
+	baseURL, priv, _ := testServer(t)
+	token := signTestToken(t, priv, "provider-a", []string{"provider"})
+
+	req, _ := http.NewRequest(http.MethodGet, baseURL+"/wallets/00000000-0000-0000-0000-000000000000", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("erro na requisição: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, esperado 403", resp.StatusCode)
 	}
 }
 

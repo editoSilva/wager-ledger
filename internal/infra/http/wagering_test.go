@@ -282,6 +282,32 @@ func TestGetWagerTransaction_HTTP_OtherProvider_Returns403(t *testing.T) {
 	}
 }
 
+func TestGetWagerTransaction_HTTP_IdentityWithoutAuthorizedRole_Returns403(t *testing.T) {
+	baseURL, priv, _ := testServer(t)
+	internalToken := signTestToken(t, priv, "wager-internal", []string{"internal"})
+	providerToken := signTestToken(t, priv, "provider-a", []string{"provider"})
+	noRoleToken := signTestToken(t, priv, "auditor", nil)
+
+	walletID, playerID := openTestWallet(t, baseURL, internalToken, "100.00")
+	externalID := randomExternalID("bet-no-role")
+	postResp := postWagerTransaction(t, baseURL, providerToken, "provider-a:"+externalID,
+		betBody("provider-a", externalID, playerID, walletID, "10.00"))
+	var created wageringResponse
+	_ = json.NewDecoder(postResp.Body).Decode(&created)
+	postResp.Body.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, baseURL+"/wagering/transactions/"+created.TransactionID, nil)
+	req.Header.Set("Authorization", "Bearer "+noRoleToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("erro na requisição: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, esperado 403", resp.StatusCode)
+	}
+}
+
 func TestGetWagerTransaction_HTTP_NotFound_Returns404(t *testing.T) {
 	baseURL, priv, _ := testServer(t)
 	providerToken := signTestToken(t, priv, "provider-a", []string{"provider"})

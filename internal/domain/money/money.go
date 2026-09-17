@@ -138,6 +138,9 @@ func normalizeCurrency(currency string) (string, error) {
 	if len(cur) != 3 || !isAllLetters(cur) {
 		return "", ErrInvalidCurrency
 	}
+	if !iso4217Currencies[cur] {
+		return "", ErrInvalidCurrency
+	}
 	return cur, nil
 }
 
@@ -148,6 +151,29 @@ func isAllLetters(s string) bool {
 		}
 	}
 	return true
+}
+
+var iso4217Currencies = map[string]bool{
+	"AED": true, "AFN": true, "ALL": true, "AMD": true, "ANG": true, "AOA": true, "ARS": true, "AUD": true,
+	"AWG": true, "AZN": true, "BAM": true, "BBD": true, "BDT": true, "BGN": true, "BHD": true, "BIF": true,
+	"BMD": true, "BND": true, "BOB": true, "BRL": true, "BSD": true, "BTN": true, "BWP": true, "BYN": true,
+	"BZD": true, "CAD": true, "CDF": true, "CHF": true, "CLP": true, "CNY": true, "COP": true, "CRC": true,
+	"CUP": true, "CVE": true, "CZK": true, "DJF": true, "DKK": true, "DOP": true, "DZD": true, "EGP": true,
+	"ERN": true, "ETB": true, "EUR": true, "FJD": true, "FKP": true, "GBP": true, "GEL": true, "GHS": true,
+	"GIP": true, "GMD": true, "GNF": true, "GTQ": true, "GYD": true, "HKD": true, "HNL": true, "HTG": true,
+	"HUF": true, "IDR": true, "ILS": true, "INR": true, "IQD": true, "IRR": true, "ISK": true, "JMD": true,
+	"JOD": true, "JPY": true, "KES": true, "KGS": true, "KHR": true, "KMF": true, "KPW": true, "KRW": true,
+	"KWD": true, "KYD": true, "KZT": true, "LAK": true, "LBP": true, "LKR": true, "LRD": true, "LSL": true,
+	"LYD": true, "MAD": true, "MDL": true, "MGA": true, "MKD": true, "MMK": true, "MNT": true, "MOP": true,
+	"MRU": true, "MUR": true, "MVR": true, "MWK": true, "MXN": true, "MYR": true, "MZN": true, "NAD": true,
+	"NGN": true, "NIO": true, "NOK": true, "NPR": true, "NZD": true, "OMR": true, "PAB": true, "PEN": true,
+	"PGK": true, "PHP": true, "PKR": true, "PLN": true, "PYG": true, "QAR": true, "RON": true, "RSD": true,
+	"RUB": true, "RWF": true, "SAR": true, "SBD": true, "SCR": true, "SDG": true, "SEK": true, "SGD": true,
+	"SHP": true, "SLE": true, "SOS": true, "SRD": true, "SSP": true, "STN": true, "SYP": true, "SZL": true,
+	"THB": true, "TJS": true, "TMT": true, "TND": true, "TOP": true, "TRY": true, "TTD": true, "TWD": true,
+	"TZS": true, "UAH": true, "UGX": true, "USD": true, "UYU": true, "UZS": true, "VES": true, "VND": true,
+	"VUV": true, "WST": true, "XAF": true, "XCD": true, "XOF": true, "XPF": true, "YER": true, "ZAR": true,
+	"ZMW": true, "ZWL": true,
 }
 
 // Currency devolve o código ISO 4217 da moeda deste valor.
@@ -162,6 +188,9 @@ func (m Money) IsZero() bool { return m.minorUnits == 0 }
 // Add soma dois valores monetários. Exige moedas compatíveis e trata
 // overflow.
 func (m Money) Add(other Money) (Money, error) {
+	if m.currency == "" || other.currency == "" {
+		return Money{}, ErrEmptyCurrency
+	}
 	if m.currency != other.currency {
 		return Money{}, ErrCurrencyMismatch
 	}
@@ -176,6 +205,9 @@ func (m Money) Add(other Money) (Money, error) {
 // quem aplicar o resultado a um saldo de carteira rejeita negativo
 // naquele contexto específico.
 func (m Money) Sub(other Money) (Money, error) {
+	if m.currency == "" || other.currency == "" {
+		return Money{}, ErrEmptyCurrency
+	}
 	if m.currency != other.currency {
 		return Money{}, ErrCurrencyMismatch
 	}
@@ -188,6 +220,9 @@ func (m Money) Sub(other Money) (Money, error) {
 
 // Negate devolve o valor com o sinal invertido. Usado por ROLLBACK.
 func (m Money) Negate() (Money, error) {
+	if m.currency == "" {
+		return Money{}, ErrEmptyCurrency
+	}
 	if m.minorUnits == math.MinInt64 {
 		return Money{}, ErrOverflow
 	}
@@ -196,6 +231,9 @@ func (m Money) Negate() (Money, error) {
 
 // Compare retorna -1, 0 ou 1. Exige moedas compatíveis.
 func (m Money) Compare(other Money) (int, error) {
+	if m.currency == "" || other.currency == "" {
+		return 0, ErrEmptyCurrency
+	}
 	if m.currency != other.currency {
 		return 0, ErrCurrencyMismatch
 	}
@@ -218,9 +256,9 @@ func (m Money) Equals(other Money) bool {
 // casas (ex.: "25.00", "-5.30").
 func (m Money) DecimalString() string {
 	negative := m.minorUnits < 0
-	abs := m.minorUnits
+	abs := uint64(m.minorUnits)
 	if negative {
-		abs = -abs
+		abs = uint64(-(m.minorUnits + 1)) + 1
 	}
 	intPart := abs / 100
 	fracPart := abs % 100
@@ -238,6 +276,9 @@ type moneyJSON struct {
 
 // MarshalJSON implementa json.Marshaler.
 func (m Money) MarshalJSON() ([]byte, error) {
+	if m.currency == "" {
+		return nil, ErrEmptyCurrency
+	}
 	return json.Marshal(moneyJSON{Amount: m.DecimalString(), Currency: m.currency})
 }
 

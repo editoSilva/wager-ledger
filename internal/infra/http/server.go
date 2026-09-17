@@ -15,7 +15,7 @@ import (
 func NewServer(lc fx.Lifecycle, cfg config.Config, mux *http.ServeMux, logger *slog.Logger) *http.Server {
 	srv := &http.Server{
 		Addr:              net.JoinHostPort("", cfg.HTTPPort),
-		Handler:           mux,
+		Handler:           WithRequestLogging(logger)(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

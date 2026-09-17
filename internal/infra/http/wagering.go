@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -62,6 +63,13 @@ func RegisterWageringRoutes(
 	mux.Handle("GET /wagering/transactions/{id}", chain(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			handleGetWagerTransaction(w, r, txRepo)
+		}),
+		authenticate,
+	))
+
+	mux.Handle("GET /providers/{providerId}/wagering/transactions/{externalId}", chain(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleGetWagerTransactionByProviderAndExternalID(w, r, txRepo)
 		}),
 		authenticate,
 	))
@@ -141,8 +149,10 @@ func writeProcessWagerTransactionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusServiceUnavailable, "too_many_retries", err.Error())
 	case errors.Is(err, ports.ErrNotFound):
 		writeJSONError(w, http.StatusNotFound, "not_found", "carteira não encontrada")
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		writeJSONError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "serviço temporariamente indisponível")
 	default:
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "erro interno ao processar transação")
 	}
 }
 
@@ -159,8 +169,44 @@ func handleGetWagerTransaction(w http.ResponseWriter, r *http.Request, repo port
 	}
 
 	identity, ok := idp.IdentityFromContext(r.Context())
-	if ok && identity.HasRole("provider") && tx.ProviderID() != "" && tx.ProviderID() != identity.ClientID {
+	if !ok || (!identity.HasRole("internal") && (!identity.HasRole("provider") || tx.ProviderID() == "" || tx.ProviderID() != identity.ClientID)) {
 		writeJSONError(w, http.StatusForbidden, "forbidden", "acesso restrito às próprias transações do provedor")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(wagerTransactionResponse{
+		TransactionID:         string(tx.ID()),
+		ProviderID:            tx.ProviderID(),
+		ExternalTransactionID: tx.ExternalID(),
+		WalletID:              string(tx.WalletID()),
+		PlayerID:              string(tx.PlayerID()),
+		Kind:                  string(tx.Kind()),
+		Status:                string(tx.Status()),
+		Money:                 tx.Money(),
+		FailureCode:           tx.FailureCode(),
+		FinancialResult:       tx.FinancialResult(),
+	})
+}
+
+func handleGetWagerTransactionByProviderAndExternalID(w http.ResponseWriter, r *http.Request, repo ports.WagerTransactionRepository) {
+	providerID := r.PathValue("providerId")
+	externalID := r.PathValue("externalId")
+
+	identity, ok := idp.IdentityFromContext(r.Context())
+	if !ok || (!identity.HasRole("internal") && (!identity.HasRole("provider") || identity.ClientID != providerID)) {
+		writeJSONError(w, http.StatusForbidden, "forbidden", "acesso restrito às próprias transações do provedor")
+		return
+	}
+
+	tx, err := repo.FindByProviderAndExternalID(r.Context(), providerID, externalID)
+	if err != nil {
+		if errors.Is(err, ports.ErrNotFound) {
+			writeJSONError(w, http.StatusNotFound, "not_found", "transação não encontrada")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "erro ao buscar transação")
 		return
 	}
 
