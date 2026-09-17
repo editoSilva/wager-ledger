@@ -138,9 +138,9 @@ periódica adicionada ao `ReferenceRetryWorker`, evento de domínio
 
 Achado original: `GET /wagering/transactions/{id}` e `GET /wallets/{id}` aceitavam qualquer identidade autenticada, e a checagem de dono ignorava transações com `ProviderID` vazio (OPENING). **Estado confirmado nesta rodada de QA**: `handleGetWagerTransaction` (`internal/infra/http/wagering.go`) agora exige `identity.HasRole("internal")` OU (`identity.HasRole("provider")` E `tx.ProviderID() == identity.ClientID`) — bloqueando explicitamente OPENING (`ProviderID() == ""`) e identidades sem papel. `GET /wallets/{id}` exige `requireInternal`. Não foram encontradas regressões nesta rodada; testes existentes em `internal/infra/http/wallets_test.go` e `internal/infra/http/wagering_test.go` cobrem os casos.
 
-### P1 — Mesma chave com operações diferentes pode ser confirmada duas vezes
+### P1 — [Corrigido antes desta rodada, confirmado em 17/09] Mesma chave com operações diferentes pode ser confirmada duas vezes
 
-A migration 0005 cria um índice comum, não UNIQUE, sobre `idempotency_key`. A constraint da migration 0002 protege apenas `(provider_id, external_transaction_id)`. Duas requisições concorrentes com a mesma chave, IDs externos diferentes e carteiras diferentes podem ambas executar os SELECTs sem encontrar registro e confirmar duas operações. O retry por versão da carteira não coordena carteiras diferentes. O teste de 50 requisições da mesma operação não cobre esse caso. Definir o escopo da chave (global ou por provedor), torná-lo único no banco e alinhar lookup, tratamento de conflito e teste concorrente ao escopo escolhido.
+Achado original: a migration 0005 cria um índice comum, não UNIQUE, sobre `idempotency_key`, e a constraint da migration 0002 protege apenas `(provider_id, external_transaction_id)` — duas requisições concorrentes com a mesma chave e IDs externos diferentes poderiam ambas passar pelo SELECT sem encontrar registro e confirmar duas operações. **Estado confirmado nesta rodada**: a migration 0006 (`wager_tx_idempotency_key_unique`) já criava um índice `UNIQUE` sobre `idempotency_key` (parcial, `WHERE idempotency_key IS NOT NULL`), e `WagerTransactionRepository.Create` (`internal/infra/postgres/wagertx_repository.go`) já mapeia a violação para `ports.ErrAlreadyExists`, que `ProcessWagerTransaction.Execute` usa para reexecutar a tentativa (`internal/application/usecase/process_wager_transaction.go`), encontrando o registro concorrente via `resolveExisting` e retornando `ErrIdempotencyConflict` quando o payload diverge. A lacuna real era apenas de cobertura de teste — o cenário concorrente com `idempotency_key` igual e `external_transaction_id` diferente não era exercitado. Adicionado `TestProcessWagerTransaction_SameIdempotencyKeyDifferentExternalID_ConcurrentSingleDebit` em `internal/infra/postgres/process_wager_transaction_integration_test.go` (20 goroutines, mesma chave, IDs externos distintos): 1 PROCESSED e 19 `ErrIdempotencyConflict`, saldo final e ledger consistentes com um único débito. `go test -race` verde.
 
 ### P2 — Replay de rejeição não preserva o saldo originalmente retornado
 
@@ -235,9 +235,11 @@ ver matriz acima). Restante:
 
 1. Automatizar em CI a validação com processos de SO reais e restart de
    container (hoje manual, documentada em `docs/QA_LOG.md`).
-2. Resolver a exclusão concorrente por `idempotency_key` quando usada por
-   operações diferentes (unicidade não implementada no schema — ver
-   ARCHITECTURE.md, limitação 3).
+2. ~~Resolver a exclusão concorrente por `idempotency_key`~~ — já garantida
+   por índice `UNIQUE` (migration 0006) e conflito tratado em
+   `ProcessWagerTransaction`; cobertura de teste concorrente adicionada
+   nesta rodada (ver P1 acima). ARCHITECTURE.md limitação 3 deve ser
+   atualizada para não repetir o achado como pendente.
 3. Classificar erros HTTP de infraestrutura (500/503) separadamente de erro
    de entrada (400) — não revisitado nesta rodada.
 4. Avaliar tracing distribuído (OpenTelemetry) como diferencial opcional.

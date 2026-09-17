@@ -162,10 +162,12 @@ negócio e Money normalizado, excluindo a chave de idempotência e metadados
 de transporte (`usecase/idempotency.go`). Consulta por chave e depois por
 operação para distinguir replay e conflito; PROCESSED usa saldo persistido.
 
-**Limitações**: `idempotency_key` tem somente índice não único (migration
-0005). A checagem na aplicação não impede duas operações distintas,
-em carteiras diferentes, confirmarem simultaneamente a mesma chave.
-O replay de REJECTED lê o saldo atual, não o originalmente retornado.
+**Limitações**: o replay de REJECTED lê o saldo atual, não o originalmente
+retornado. `idempotency_key` já tem índice `UNIQUE` parcial (migration
+0006), e `ProcessWagerTransaction` trata a violação como
+`ErrIdempotencyConflict`, impedindo duas operações distintas de
+confirmarem simultaneamente a mesma chave (coberto por teste concorrente
+em `internal/infra/postgres/process_wager_transaction_integration_test.go`).
 
 ## 5. WalletLedgerEntry
 
@@ -432,12 +434,14 @@ integralmente na rodada de QA de 17/09/2026 (ver `docs/QA_LOG.md`):
    `ListStalePendingReferenceIDs` (repositório) + verificação periódica no
    `ReferenceRetryWorker`, transicionando para `FAILED` com
    `failureCode=REFERENCE_EXPIRED`.
-3. `idempotency_key` não tem unicidade própria no schema — apenas
-   `(provider_id, external_transaction_id)`, mais um índice não-único
-   em `idempotency_key` (migration `0005`) para o lookup de replay. A
-   checagem da aplicação não garante exclusão concorrente entre operações
-   diferentes usando a mesma chave em cenários patológicos fora dos
-   testados (mesma chave, payloads diferentes, concorrentes).
+3. ~~`idempotency_key` não tem unicidade própria no schema~~ — a migration
+   `0006` adiciona índice `UNIQUE` parcial em `idempotency_key`, e
+   `WagerTransactionRepository.Create` mapeia a violação para
+   `ports.ErrAlreadyExists`, levando `ProcessWagerTransaction.Execute` a
+   reexecutar e retornar `ErrIdempotencyConflict` quando o payload diverge.
+   Cenário concorrente (mesma chave, `external_transaction_id` diferentes)
+   coberto por
+   `TestProcessWagerTransaction_SameIdempotencyKeyDifferentExternalID_ConcurrentSingleDebit`.
 4. Testes de concorrência/distribuição com processos de sistema
    operacional reais (README §8/§13, itens 4 e 8) foram executados e
    validados manualmente nesta rodada (curl concorrente, kill/restart do
