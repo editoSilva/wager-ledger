@@ -295,6 +295,30 @@ func TestProcessWagerTransaction_Refund_CreditsReferencedBet(t *testing.T) {
 	}
 }
 
+func TestProcessWagerTransaction_WinReferencingBet_SameRound_CreditsWallet(t *testing.T) {
+	uc, walletRepo, _, ledgerRepo, _ := newTestProcessWagerTransaction()
+	seedWallet(t, walletRepo, "100.00")
+
+	bet := betInput("bet-key", "bet-1", "30.00")
+	if _, err := uc.Execute(context.Background(), bet); err != nil {
+		t.Fatalf("BET: %v", err)
+	}
+
+	win := betInput("win-key", "win-1", "30.00")
+	win.Kind = string(wagertx.KindWin)
+	win.ReferenceExternalTransactionID = bet.ExternalTransactionID
+	out, err := uc.Execute(context.Background(), win)
+	if err != nil {
+		t.Fatalf("WIN: %v", err)
+	}
+	if out.Status != string(wagertx.StatusProcessed) || out.Balance.DecimalString() != "100.00" {
+		t.Fatalf("resultado WIN = %#v, esperado PROCESSED e saldo 100.00 (débito de 30.00 seguido de crédito de 30.00)", out)
+	}
+	if len(ledgerRepo.entries) != 2 || ledgerRepo.entries[1].Direction() != ledger.DirectionCredit {
+		t.Fatalf("ledger após WIN referenciado = %#v, esperado crédito referenciando o BET", ledgerRepo.entries)
+	}
+}
+
 func TestProcessWagerTransaction_RollbackOfBet_CreditsWallet(t *testing.T) {
 	uc, walletRepo, _, ledgerRepo, _ := newTestProcessWagerTransaction()
 	seedWallet(t, walletRepo, "100.00")

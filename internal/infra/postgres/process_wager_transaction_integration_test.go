@@ -310,6 +310,81 @@ func TestProcessWagerTransaction_SameIdempotencyKeyDifferentExternalID_Concurren
 	assertReconciled(t, ctx, walletRepo, ledgerRepo, w.ID())
 }
 
+// TestProcessWagerTransaction_WinReferencingBet_PersistsAgainstRealSchema cobre
+// o README §7 (WIN pode referenciar o BET da mesma rodada) contra o schema
+// real: a migration 0007 relaxou wager_tx_reference_by_kind especificamente
+// para permitir isso, e só um teste contra Postgres de verdade comprova que a
+// constraint aceita a linha, algo que os fakes do pacote usecase não cobrem.
+func TestProcessWagerTransaction_WinReferencingBet_PersistsAgainstRealSchema(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	walletRepo := NewWalletRepository(pool)
+	txRepo := NewWagerTransactionRepository(pool)
+	ledgerRepo := NewLedgerRepository(pool)
+	outboxRepo := NewOutboxRepository(pool)
+	uow := NewUnitOfWork(pool)
+	idGen := idgen.NewUUIDGenerator()
+
+	uc := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen, observability.NewMetrics())
+
+	w := newTestWalletWithOpeningLedger(t, pool, ledgerRepo, "100.00")
+	amount, _ := money.FromDecimalString("30.00", "BRL")
+
+	providerID := "provider-a"
+	runID := uuid.NewString()
+	roundID := uuid.NewString()
+
+	betExternalID := runID + "-bet"
+	betOut, err := uc.Execute(ctx, usecase.ProcessWagerTransactionInput{
+		ProviderID:            providerID,
+		ExternalTransactionID: betExternalID,
+		IdempotencyKey:        providerID + ":" + betExternalID,
+		PlayerID:              string(w.PlayerID()),
+		WalletID:              string(w.ID()),
+		RoundID:               roundID,
+		GameID:                "game-1",
+		Kind:                  string(wagertx.KindBet),
+		Money:                 amount,
+	})
+	if err != nil || betOut.Status != string(wagertx.StatusProcessed) {
+		t.Fatalf("BET: out=%#v err=%v", betOut, err)
+	}
+
+	winExternalID := runID + "-win"
+	winOut, err := uc.Execute(ctx, usecase.ProcessWagerTransactionInput{
+		ProviderID:                     providerID,
+		ExternalTransactionID:          winExternalID,
+		IdempotencyKey:                 providerID + ":" + winExternalID,
+		PlayerID:                       string(w.PlayerID()),
+		WalletID:                       string(w.ID()),
+		RoundID:                        roundID,
+		GameID:                         "game-1",
+		Kind:                           string(wagertx.KindWin),
+		Money:                          amount,
+		ReferenceExternalTransactionID: betExternalID,
+	})
+	if err != nil {
+		t.Fatalf("WIN: %v", err)
+	}
+	if winOut.Status != string(wagertx.StatusProcessed) {
+		t.Fatalf("WIN.Status = %s, esperado PROCESSED", winOut.Status)
+	}
+	if winOut.Balance.DecimalString() != "100.00" {
+		t.Errorf("WIN.Balance = %s, esperado 100.00 (débito de 30.00 seguido de crédito de 30.00)", winOut.Balance.DecimalString())
+	}
+
+	final, err := walletRepo.FindByID(ctx, w.ID())
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if final.Balance().DecimalString() != "100.00" {
+		t.Errorf("Balance() final = %s, esperado 100.00", final.Balance().DecimalString())
+	}
+
+	assertReconciled(t, ctx, walletRepo, ledgerRepo, w.ID())
+}
+
 // assertReconciled cobre o item 9 do README §13: ao final de um cenário
 // relevante, o saldo armazenado da carteira deve bater com a soma do ledger,
 // exatamente o que POST /wallets/:id/reconciliation verifica em produção.

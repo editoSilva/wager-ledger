@@ -119,9 +119,11 @@ convertidas para maiúsculas antes de calcular o hash.
 - Regras de valor por tipo, validadas na construção
   (`NewExternalTransaction`): `LOSS` exige `amount == 0.00`;
   `BET`/`WIN`/`REFUND`/`ROLLBACK` exigem valor `> 0`.
-  `REFUND`/`ROLLBACK` exigem `referenceExternalTransactionId`; os
-  demais tipos rejeitam esse campo se presente. Isso diverge do README
-  para WIN com referência opcional; correção pendente.
+  `REFUND`/`ROLLBACK` exigem `referenceExternalTransactionId`; `WIN`
+  aceita esse campo como opcional (referência ao BET da mesma rodada,
+  README §7); `BET`/`LOSS` rejeitam o campo se presente. A constraint
+  `wager_tx_reference_by_kind` (migration 0007) acompanha essa regra no
+  schema.
 - `NewOpeningTransaction` constrói já em `PROCESSED`, sem os metadados
   externos (provider, chave de idempotência, hash, rodada, jogo,
   referência), que fazem sentido apenas para operações vindas de
@@ -162,11 +164,12 @@ negócio e Money normalizado, excluindo a chave de idempotência e metadados
 de transporte (`usecase/idempotency.go`). Consulta por chave e depois por
 operação para distinguir replay e conflito; PROCESSED usa saldo persistido.
 
-**Limitações**: o replay de REJECTED lê o saldo atual, não o originalmente
-retornado. `idempotency_key` já tem índice `UNIQUE` parcial (migration
-0006), e `ProcessWagerTransaction` trata a violação como
-`ErrIdempotencyConflict`, impedindo duas operações distintas de
-confirmarem simultaneamente a mesma chave (coberto por teste concorrente
+`MarkRejectedWithResult` persiste o saldo retornado também para REJECTED,
+então `replayOutput` usa o resultado gravado em ambos os casos (PROCESSED e
+REJECTED), não o saldo atual da carteira. `idempotency_key` já tem índice
+`UNIQUE` parcial (migration 0006), e `ProcessWagerTransaction` trata a
+violação como `ErrIdempotencyConflict`, impedindo duas operações distintas
+de confirmarem simultaneamente a mesma chave (coberto por teste concorrente
 em `internal/infra/postgres/process_wager_transaction_integration_test.go`).
 
 ## 5. WalletLedgerEntry
@@ -457,3 +460,12 @@ integralmente na rodada de QA de 17/09/2026 (ver `docs/QA_LOG.md`):
    do escopo local.
 7. Tracing distribuído (OpenTelemetry) não foi implementado — diferencial
    opcional do desafio.
+8. ~~WIN não podia referenciar o BET da mesma rodada~~ — `rulesFor(KindWin)`
+   já permite referência opcional e a migration `0007`
+   (`wager_tx_win_reference`) já relaxa `wager_tx_reference_by_kind` para
+   aceitar isso; coberto por `TestProcessWagerTransaction_WinReferencingBet_SameRound_CreditsWallet`
+   e pelo teste de integração `TestProcessWagerTransaction_WinReferencingBet_PersistsAgainstRealSchema`.
+9. ~~Falhas de infraestrutura HTTP voltavam como 400~~ —
+   `writeProcessWagerTransactionError` já classifica
+   `context.Canceled`/`DeadlineExceeded` como 503 e usa 500 genérico
+   (sem `err.Error()`) como default.

@@ -77,14 +77,14 @@ QA)" acima e em `ARCHITECTURE.md`.
 | Dinheiro exato e overflow (§6.1) | Parcial | `internal/domain/money/money.go`; persistência BIGINT/CHAR(3) | Zero-value, limite mínimo e validação de moeda exigem correções descritas abaixo |
 | Carteira e concorrência (§6.2, §8) | Implementado no fluxo atual | `wallet.go`, `wallet_repository.go:Save`, `ProcessWagerTransaction.Execute` | Retry limitado a 5; provas existentes usam goroutines, não três processos |
 | Abertura e crédito inicial atômico (§9) | Implementado | `open_wallet.go`, migrations 0001/0002/0003, outbox | Abertura positiva grava OPENING, ledger e dois eventos; zero não os cria |
-| BET, WIN, LOSS (§7) | Parcial | `process_wager_transaction.go` | WIN com referência é rejeitado pelo domínio e pelo schema |
+| BET, WIN, LOSS (§7) | **[QA 17/09] Implementado**, incluindo WIN com referência opcional ao BET da mesma rodada (migration 0007) | `process_wager_transaction.go` | — |
 | REFUND, ROLLBACK e referências (§7) | **[QA 17/09] Implementado**, incluindo `PENDING_REFERENCE` e expiração por TTL | `process_wager_transaction.go`, `reference_retry_worker.go` | — |
 | Pendências duráveis e FAILED (§6.3, §7) | **[QA 17/09] Implementado**: worker de retomada + TTL de expiração (`REFERENCE_PENDING_TTL`, lacuna real corrigida nesta rodada) | `wagertx.go`, `reference_retry_worker.go`, `process_wager_transaction.go` | — |
 | Ledger append-only (§6.4) | Implementado no fluxo e protegido contra UPDATE/DELETE; **[QA 17/09]** reconciliação exposta e testada | migration 0003, `ledger.go`, `reconcile_wallet.go` | — |
-| Hash persistente e replay (§9) | Parcial | `idempotency.go`, `resolveExisting`, `replayOutput` | Falta exclusão concorrente por chave; replay de rejeição lê saldo atual (não revisitado nesta rodada) |
+| Hash persistente e replay (§9) | **[QA 17/09] Implementado**: exclusão concorrente por chave (migration 0006) e replay de rejeição com saldo persistido | `wagertx_repository.go`, `resolveExisting`, `replayOutput` | — |
 | OAuth/OIDC e autorização (§2) | **[QA 17/09] Implementado**: `aud`/`exp` obrigatórios, validado com Keycloak real | `idp/middleware.go`, `jwks.go`, handlers | Integração real com Keycloak validada manualmente, não automatizada em CI |
 | Consultas e reconciliação (§9) | **[QA 17/09] Implementado**: ledger com cursor, consulta por provedor/ID externo, reconciliação | `wallets.go`, `wagering.go`, `reconcile_wallet.go` | — |
-| HTTP e classificação de falhas (§9) | Parcial (não revisitado nesta rodada) | `writeProcessWagerTransactionError` | Erros inesperados de infraestrutura ainda podem virar 400; fora do escopo desta rodada de QA |
+| HTTP e classificação de falhas (§9) | **[QA 17/09] Implementado**: `context.Canceled`/`DeadlineExceeded` retornam 503, default 500 sem expor `err.Error()` | `writeProcessWagerTransactionError` | — |
 | Readiness (§9) | **[QA 17/09] Implementado**: checa Postgres e SQS de verdade | `postgres/readiness.go`, `sqs/readiness.go`, `http/health.go` | — |
 | Consumidor, inbox, DLQ e políticas (§10) | **[QA 17/09] Implementado**: consumidor real, inbox com dedup, filas + DLQ provisionadas via `scripts/localstack-init-sqs.sh` | `infra/sqs/consumer.go`, `infra/sqs/consumer_integration_test.go`, `infra/postgres/inbox_repository.go` | Política de IAM/roles reais (produção AWS) fora do escopo local |
 | Outbox transacional (§11) | **[QA 17/09] Implementado**: publisher com claim/lock TTL/backoff/recuperação | `infra/outbox/publisher.go`, `infra/outbox/publisher_integration_test.go`, `infra/postgres/outbox_publisher_repository_test.go` | — |
@@ -142,21 +142,21 @@ Achado original: `GET /wagering/transactions/{id}` e `GET /wallets/{id}` aceitav
 
 Achado original: a migration 0005 cria um índice comum, não UNIQUE, sobre `idempotency_key`, e a constraint da migration 0002 protege apenas `(provider_id, external_transaction_id)` — duas requisições concorrentes com a mesma chave e IDs externos diferentes poderiam ambas passar pelo SELECT sem encontrar registro e confirmar duas operações. **Estado confirmado nesta rodada**: a migration 0006 (`wager_tx_idempotency_key_unique`) já criava um índice `UNIQUE` sobre `idempotency_key` (parcial, `WHERE idempotency_key IS NOT NULL`), e `WagerTransactionRepository.Create` (`internal/infra/postgres/wagertx_repository.go`) já mapeia a violação para `ports.ErrAlreadyExists`, que `ProcessWagerTransaction.Execute` usa para reexecutar a tentativa (`internal/application/usecase/process_wager_transaction.go`), encontrando o registro concorrente via `resolveExisting` e retornando `ErrIdempotencyConflict` quando o payload diverge. A lacuna real era apenas de cobertura de teste — o cenário concorrente com `idempotency_key` igual e `external_transaction_id` diferente não era exercitado. Adicionado `TestProcessWagerTransaction_SameIdempotencyKeyDifferentExternalID_ConcurrentSingleDebit` em `internal/infra/postgres/process_wager_transaction_integration_test.go` (20 goroutines, mesma chave, IDs externos distintos): 1 PROCESSED e 19 `ErrIdempotencyConflict`, saldo final e ledger consistentes com um único débito. `go test -race` verde.
 
-### P2 — Replay de rejeição não preserva o saldo originalmente retornado
+### P2 — [Corrigido antes desta rodada, confirmado em 17/09] Replay de rejeição não preservava o saldo originalmente retornado
 
-`reject` retorna o saldo da carteira, mas não o persiste como resultado financeiro. `replayOutput` usa resultado persistido apenas para PROCESSED; para REJECTED consulta a carteira atual. Uma aposta rejeitada, seguida por um crédito, retorna saldo diferente no replay. O README exige resultado persistido para operações concluídas e define REJECTED como terminal. Persistir o resultado retornado também para rejeições ou resolver explicitamente essa divergência contratual.
+Achado original: `reject` retornava o saldo da carteira sem persisti-lo como resultado financeiro; `replayOutput` consultaria a carteira atual para REJECTED, divergindo do saldo original após operações subsequentes. **Estado confirmado nesta rodada**: `WagerTransaction.MarkRejectedWithResult` já persiste `financialResult` na rejeição, `reject()` (`internal/application/usecase/process_wager_transaction.go`) já chama esse método, e `WagerTransactionRepository.Update` já grava `financial_result_minor_units/currency`. `replayOutput` usa esse valor persistido também para REJECTED. Já havia teste cobrindo isso (`TestProcessWagerTransaction_RejectedReplay_ReturnsOriginalBalance`).
 
-### P2 — Money ainda aceita valores de domínio inválidos e tem limite não coberto
+### P2 — [Corrigido antes desta rodada, confirmado em 17/09] Money aceitava valores de domínio inválidos e tinha limite não coberto
 
-`Money{}.Add(Money{})`, `Compare` e `MarshalJSON` não rejeitam moeda vazia. `normalizeCurrency` valida somente três letras, aceitando códigos como `ZZZ`, sem comprovar ISO 4217. `FromMinorUnits` aceita `math.MinInt64`, porém `DecimalString` executa `abs = -abs`, que transborda nesse limite e produz representação incorreta. Corrigir validação de valores não inicializados, política de moedas suportadas e serialização do limite mínimo; incluir testes específicos. A ausência de float está correta e deve ser mantida.
+Achado original: `Add`/`Compare`/`MarshalJSON` não rejeitavam moeda vazia; `normalizeCurrency` não validava ISO 4217; `DecimalString` transbordava em `math.MinInt64`. **Estado confirmado nesta rodada**: `normalizeCurrency` valida contra tabela `iso4217Currencies`; `Add`/`Compare` rejeitam moeda vazia com `ErrEmptyCurrency`; `Negate`/`DecimalString` tratam `math.MinInt64` explicitamente (retornando `ErrOverflow` ou usando aritmética sem overflow). Testes em `internal/domain/money/money_test.go`.
 
-### P2 — Contrato WIN com referência diverge do domínio e do banco
+### P2 — [Corrigido antes desta rodada, confirmado em 17/09] Contrato WIN com referência divergia do domínio e do banco
 
-O README §7 permite WIN referenciar BET da mesma rodada. `NewExternalTransaction` rejeita referência para tipos que não a exigem, incluindo WIN; a constraint `wager_tx_reference_by_kind` também só permite REFUND/ROLLBACK. Implementar a referência opcional e sua validação ou explicitar a pendência, sem chamar todo o fluxo WIN de completo.
+Achado original: o README §7 permite WIN referenciar BET da mesma rodada, mas `NewExternalTransaction` rejeitava referência para WIN e a constraint `wager_tx_reference_by_kind` só permitia REFUND/ROLLBACK. **Estado confirmado nesta rodada**: `rulesFor(KindWin)` já marca `referenceAllowed=true` (referência opcional, não obrigatória) e a migration 0007 (`wager_tx_win_reference`) já relaxou a constraint para aceitar `kind = 'WIN'` com referência. `validateReference` já valida que a referência de um WIN é um BET compatível (mesmo provider/player/wallet/round/valor). A lacuna real era de cobertura de teste: adicionados `TestProcessWagerTransaction_WinReferencingBet_SameRound_CreditsWallet` (fake, `internal/application/usecase`) e `TestProcessWagerTransaction_WinReferencingBet_PersistsAgainstRealSchema` (Postgres real, `internal/infra/postgres`), confirmando que a constraint do banco de fato aceita a linha.
 
-### P2 — Falhas de infraestrutura retornam erro de entrada
+### P2 — [Corrigido antes desta rodada, confirmado em 17/09] Falhas de infraestrutura retornavam erro de entrada
 
-O default de `writeProcessWagerTransactionError` retorna 400 e `err.Error()`. Falhas de conexão, timeout ou commit não classificadas caem nesse caminho, confundindo indisponibilidade transitória com requisição inválida e podendo expor detalhes internos. Classificar erros conhecidos, retornar 503 para indisponibilidade transitória e 500 para falhas inesperadas, com mensagem pública adequada.
+Achado original: o default de `writeProcessWagerTransactionError` retornava 400 e `err.Error()`, confundindo indisponibilidade transitória com requisição inválida. **Estado confirmado nesta rodada**: `writeProcessWagerTransactionError` (`internal/infra/http/wagering.go`) já classifica `context.Canceled`/`context.DeadlineExceeded` como 503 (`temporarily_unavailable`) e usa 500 genérico (`internal_error`, sem `err.Error()`) como default, sem expor detalhes internos.
 
 ### P2 — [Corrigido antes desta rodada, confirmado em 17/09] JWT e readiness precisam de critérios operacionais explícitos
 
@@ -233,15 +233,12 @@ esta rodada de QA (autorização de consulta, Money, referências/reversões,
 inbox/SQS/outbox, consultas faltantes, reconciliação, readiness, métricas —
 ver matriz acima). Restante:
 
+Todos os achados P1/P2 conhecidos foram confirmados como já corrigidos no
+código (ver seções acima), com cobertura de teste completada nesta rodada
+onde faltava (idempotency_key concorrente, WIN com referência). Resta:
+
 1. Automatizar em CI a validação com processos de SO reais e restart de
    container (hoje manual, documentada em `docs/QA_LOG.md`).
-2. ~~Resolver a exclusão concorrente por `idempotency_key`~~ — já garantida
-   por índice `UNIQUE` (migration 0006) e conflito tratado em
-   `ProcessWagerTransaction`; cobertura de teste concorrente adicionada
-   nesta rodada (ver P1 acima). ARCHITECTURE.md limitação 3 deve ser
-   atualizada para não repetir o achado como pendente.
-3. Classificar erros HTTP de infraestrutura (500/503) separadamente de erro
-   de entrada (400) — não revisitado nesta rodada.
-4. Avaliar tracing distribuído (OpenTelemetry) como diferencial opcional.
+2. Avaliar tracing distribuído (OpenTelemetry) como diferencial opcional.
 
 Os agentes de commits e deploy devem registrar o escopo efetivamente entregue e os resultados de validação; não devem usar build/testes unitários como substituto das garantias financeiras e distribuídas ainda pendentes.
