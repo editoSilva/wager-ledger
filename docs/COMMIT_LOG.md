@@ -67,3 +67,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: usa ON CONFLICT DO NOTHING para deduplicar mensagens de forma idempotente sob concorrência e registra métricas de duplicatas, falhas de entrega e latência de processamento do consumidor SQS.
 - Arquivos: `internal/infra/postgres/inbox_repository.go`, `internal/infra/postgres/inbox_repository_test.go`, `internal/infra/sqs/consumer.go`, `internal/infra/sqs/consumer_integration_test.go`.
+
+## 2026-09-17 — feature — feat(outbox): publica eventos pendentes com worker dedicado e reentrega com backoff
+
+- Efeito: adiciona worker que reivindica eventos da outbox com trava por linha (FOR UPDATE SKIP LOCKED), publica na fila SQS de eventos e reentrega com backoff exponencial em caso de falha, com fila `wager-events` provisionada no LocalStack.
+- Arquivos: `internal/infra/outbox/module.go`, `internal/infra/outbox/publisher.go`, `internal/infra/outbox/publisher_integration_test.go`, `internal/infra/postgres/outbox_repository.go`, `internal/infra/postgres/outbox_publisher_repository_test.go`, `migrations/0009_outbox_events_version.up.sql`, `migrations/0009_outbox_events_version.down.sql`, `cmd/api/main.go`, `scripts/localstack-init-sqs.sh`, `internal/application/ports/ports.go`, `internal/config/config.go`, `internal/application/usecase/open_wallet_test.go`.

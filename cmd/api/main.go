@@ -10,6 +10,7 @@ import (
 	httpserver "github.com/editosilva/wager-ledger/internal/infra/http"
 	"github.com/editosilva/wager-ledger/internal/infra/idgen"
 	"github.com/editosilva/wager-ledger/internal/infra/idp"
+	"github.com/editosilva/wager-ledger/internal/infra/outbox"
 	"github.com/editosilva/wager-ledger/internal/infra/postgres"
 	sqsinfra "github.com/editosilva/wager-ledger/internal/infra/sqs"
 	"github.com/editosilva/wager-ledger/internal/observability"
@@ -21,6 +22,7 @@ func main() {
 		observability.Module,
 		postgres.Module,
 		sqsinfra.Module,
+		outbox.Module,
 		idp.Module,
 		idgen.Module,
 		usecase.Module,

@@ -302,6 +302,18 @@ func (r *fakeOutboxRepo) Create(ctx context.Context, e event.Event) error {
 	return nil
 }
 
+func (r *fakeOutboxRepo) Claim(ctx context.Context, workerID string, limit int, lockTTL time.Duration) ([]ports.OutboxRecord, error) {
+	return nil, nil
+}
+
+func (r *fakeOutboxRepo) MarkPublished(ctx context.Context, id string) error {
+	return nil
+}
+
+func (r *fakeOutboxRepo) MarkFailed(ctx context.Context, id string, nextAttemptAt time.Time) error {
+	return nil
+}
+
 func (r *fakeOutboxRepo) snapshot() []event.Event {
 	return append([]event.Event{}, r.events...)
 }

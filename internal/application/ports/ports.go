@@ -40,8 +40,23 @@ type LedgerRepository interface {
 	SumByWallet(ctx context.Context, walletID wallet.ID) (money.Money, error)
 }
 
+type OutboxRecord struct {
+	ID            string
+	AggregateID   string
+	EventType     string
+	Payload       []byte
+	CorrelationID string
+	CausationID   string
+	OccurredAt    time.Time
+	Version       int
+	Attempts      int
+}
+
 type OutboxRepository interface {
 	Create(ctx context.Context, e event.Event) error
+	Claim(ctx context.Context, workerID string, limit int, lockTTL time.Duration) ([]OutboxRecord, error)
+	MarkPublished(ctx context.Context, id string) error
+	MarkFailed(ctx context.Context, id string, nextAttemptAt time.Time) error
 }
 
 type InboxRepository interface {

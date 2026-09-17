@@ -19,6 +19,7 @@ type Config struct {
 	AWSSecretKey        string
 	SQSEndpoint         string
 	SQSQueueURL         string
+	EventsQueueURL      string
 	ReferencePendingTTL time.Duration
 }
 
@@ -31,6 +32,7 @@ func Load() (Config, error) {
 		OIDCJWKSURL:   getEnv("OIDC_JWKS_URL", "http://localhost:8081/realms/wager-ledger/protocol/openid-connect/certs"),
 		AWSRegion:     getEnv("AWS_REGION", "us-east-1"), AWSAccessKeyID: getEnv("AWS_ACCESS_KEY_ID", "test"), AWSSecretKey: getEnv("AWS_SECRET_ACCESS_KEY", "test"),
 		SQSEndpoint: getEnv("SQS_ENDPOINT", "http://localhost:4566"), SQSQueueURL: getEnv("SQS_QUEUE_URL", "http://localhost:4566/000000000000/wager-transactions.fifo"),
+		EventsQueueURL: getEnv("EVENTS_QUEUE_URL", "http://localhost:4566/000000000000/wager-events.fifo"),
 	}
 
 	if _, err := strconv.Atoi(cfg.HTTPPort); err != nil {
