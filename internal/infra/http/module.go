@@ -36,7 +36,7 @@ var Module = fx.Module("http",
 			keySet *idp.KeySet,
 			cfg config.Config,
 		) {
-			authenticate := idp.Authenticate(keySet, cfg.OIDCIssuerURL)
+			authenticate := idp.Authenticate(keySet, cfg.OIDCIssuerURL, cfg.OIDCAudience)
 			requireInternal := idp.RequireRole("internal")
 			RegisterWalletRoutes(mux, openWallet, walletRepo, ledgerRepo, reconcileWallet, authenticate, requireInternal)
 		},
@@ -47,7 +47,7 @@ var Module = fx.Module("http",
 			keySet *idp.KeySet,
 			cfg config.Config,
 		) {
-			authenticate := idp.Authenticate(keySet, cfg.OIDCIssuerURL)
+			authenticate := idp.Authenticate(keySet, cfg.OIDCIssuerURL, cfg.OIDCAudience)
 			requireProvider := idp.RequireRole("provider")
 			RegisterWageringRoutes(mux, processWagerTx, txRepo, authenticate, requireProvider)
 		},

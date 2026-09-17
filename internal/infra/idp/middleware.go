@@ -45,7 +45,7 @@ type realmAccess struct {
 
 // Authenticate é o middleware que valida o Bearer JWT em toda
 // requisição e injeta a Identity resultante no context.
-func Authenticate(keySet *KeySet, issuer string) func(http.Handler) http.Handler {
+func Authenticate(keySet *KeySet, issuer string, audience string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, err := extractBearerToken(r)
@@ -60,7 +60,12 @@ func Authenticate(keySet *KeySet, issuer string) func(http.Handler) http.Handler
 					return nil, errors.New("token sem kid no header")
 				}
 				return keySet.Key(kid)
-			}, jwt.WithIssuer(issuer), jwt.WithValidMethods([]string{"RS256"}))
+			},
+				jwt.WithIssuer(issuer),
+				jwt.WithAudience(audience),
+				jwt.WithExpirationRequired(),
+				jwt.WithValidMethods([]string{"RS256"}),
+			)
 
 			if err != nil || !parsed.Valid {
 				writeAuthError(w, http.StatusUnauthorized, "token inválido ou expirado")

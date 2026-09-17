@@ -14,6 +14,7 @@ type Config struct {
 	DatabaseURL         string
 	OIDCIssuerURL       string
 	OIDCJWKSURL         string
+	OIDCAudience        string
 	AWSRegion           string
 	AWSAccessKeyID      string
 	AWSSecretKey        string
@@ -30,6 +31,7 @@ func Load() (Config, error) {
 		DatabaseURL:   getEnv("DATABASE_URL", "postgres://wager:wager@localhost:5432/wager_ledger?sslmode=disable"),
 		OIDCIssuerURL: getEnv("OIDC_ISSUER_URL", "http://localhost:8081/realms/wager-ledger"),
 		OIDCJWKSURL:   getEnv("OIDC_JWKS_URL", "http://localhost:8081/realms/wager-ledger/protocol/openid-connect/certs"),
+		OIDCAudience:  getEnv("OIDC_AUDIENCE", "wager-ledger-api"),
 		AWSRegion:     getEnv("AWS_REGION", "us-east-1"), AWSAccessKeyID: getEnv("AWS_ACCESS_KEY_ID", "test"), AWSSecretKey: getEnv("AWS_SECRET_ACCESS_KEY", "test"),
 		SQSEndpoint: getEnv("SQS_ENDPOINT", "http://localhost:4566"), SQSQueueURL: getEnv("SQS_QUEUE_URL", "http://localhost:4566/000000000000/wager-transactions.fifo"),
 		EventsQueueURL: getEnv("EVENTS_QUEUE_URL", "http://localhost:4566/000000000000/wager-events.fifo"),

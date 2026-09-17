@@ -20,13 +20,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/editosilva/wager-ledger/internal/application/usecase"
+	"github.com/editosilva/wager-ledger/internal/config"
 	"github.com/editosilva/wager-ledger/internal/infra/idgen"
 	"github.com/editosilva/wager-ledger/internal/infra/idp"
 	"github.com/editosilva/wager-ledger/internal/infra/postgres"
+	"github.com/editosilva/wager-ledger/internal/observability"
 )
 
 const testIssuer = "http://test-issuer/realms/wager-ledger"
 const testKid = "http-test-key"
+const testAudience = "wager-ledger-api"
 
 type jwk struct {
 	Kty string `json:"kty"`
@@ -57,6 +60,7 @@ func signTestToken(t *testing.T, priv *rsa.PrivateKey, clientID string, roles []
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    testIssuer,
 			Subject:   "service-account-" + clientID,
+			Audience:  jwt.ClaimStrings{testAudience},
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
@@ -111,14 +115,17 @@ func testServer(t *testing.T) (baseURL string, priv *rsa.PrivateKey, pool *pgxpo
 	outboxRepo := postgres.NewOutboxRepository(pool)
 	uow := postgres.NewUnitOfWork(pool)
 	idGen := idgen.NewUUIDGenerator()
+	metrics := observability.NewMetrics()
+	logger := observability.NewLogger(config.Config{})
 	openWallet := usecase.NewOpenWallet(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen)
-	processWagerTx := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen)
+	processWagerTx := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen, metrics)
+	reconcileWallet := usecase.NewReconcileWallet(walletRepo, ledgerRepo, metrics, logger)
 
 	mux := NewRouter()
-	authenticate := idp.Authenticate(keySet, testIssuer)
+	authenticate := idp.Authenticate(keySet, testIssuer, testAudience)
 	requireInternal := idp.RequireRole("internal")
 	requireProvider := idp.RequireRole("provider")
-	RegisterWalletRoutes(mux, openWallet, walletRepo, authenticate, requireInternal)
+	RegisterWalletRoutes(mux, openWallet, walletRepo, ledgerRepo, reconcileWallet, authenticate, requireInternal)
 	RegisterWageringRoutes(mux, processWagerTx, txRepo, authenticate, requireProvider)
 
 	srv := httptest.NewServer(mux)

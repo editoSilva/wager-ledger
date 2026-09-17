@@ -1,6 +1,7 @@
 package idp
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -9,14 +10,30 @@ import (
 	"github.com/editosilva/wager-ledger/internal/config"
 )
 
-func NewKeySetFromConfig(cfg config.Config) (*KeySet, error) {
-	return NewKeySet(cfg.OIDCJWKSURL, &http.Client{Timeout: 10 * time.Second})
+const jwksAutoRefreshInterval = 10 * time.Minute
+
+func NewKeySetFromConfig(lc fx.Lifecycle, cfg config.Config) (*KeySet, error) {
+	ks, err := NewKeySet(cfg.OIDCJWKSURL, &http.Client{Timeout: 10 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+
+	var stop func()
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			stop = ks.StartAutoRefresh(jwksAutoRefreshInterval)
+			return nil
+		},
+		OnStop: func(context.Context) error {
+			if stop != nil {
+				stop()
+			}
+			return nil
+		},
+	})
+	return ks, nil
 }
 
-// Module ainda NÃO está incluído em cmd/api/main.go — sua construção faz
-// uma busca síncrona ao JWKS, então incluí-lo exigiria o Keycloak já de
-// pé para a aplicação sequer iniciar. Entra na composição na Fase 9,
-// junto com os primeiros endpoints protegidos.
 var Module = fx.Module("idp",
 	fx.Provide(NewKeySetFromConfig),
 )

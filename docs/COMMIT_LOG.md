@@ -77,3 +77,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: adiciona GET /wallets/{id}/ledger com paginação por cursor e POST /wallets/{id}/reconciliation, que confere o saldo armazenado contra a soma do ledger.
 - Arquivos: `internal/infra/postgres/ledger_repository.go`, `internal/infra/http/wallets.go`, `internal/infra/http/wallet_queries_test.go`, `internal/application/usecase/reconcile_wallet.go`, `internal/application/usecase/module.go`, `internal/infra/postgres/process_wager_transaction_integration_test.go`, `internal/application/ports/ports.go`, `internal/application/usecase/open_wallet_test.go`, `internal/infra/http/module.go`.
+
+## 2026-09-17 — feature — feat(auth): valida audience do token e renova chaves JWKS automaticamente
+
+- Efeito: exige claim `aud` correspondente e expiração obrigatória no JWT, renova o cache de JWKS periodicamente em segundo plano e provisiona o mapeamento de audience no bootstrap do Keycloak.
+- Arquivos: `internal/infra/idp/jwks.go`, `internal/infra/idp/jwks_test.go`, `internal/infra/idp/middleware.go`, `internal/infra/idp/middleware_test.go`, `internal/infra/idp/module.go`, `internal/config/config.go`, `internal/infra/http/module.go`, `internal/infra/http/wallets_test.go`, `scripts/keycloak-bootstrap.sh`.

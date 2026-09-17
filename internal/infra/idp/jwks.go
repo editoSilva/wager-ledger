@@ -23,13 +23,16 @@ type jwksResponse struct {
 	Keys []jwk `json:"keys"`
 }
 
+const minRefreshInterval = 5 * time.Second
+
 // KeySet mantém em cache as chaves públicas do IdP, indexadas por "kid".
 type KeySet struct {
 	jwksURL    string
 	httpClient *http.Client
 
-	mu   sync.RWMutex
-	keys map[string]*rsa.PublicKey
+	mu          sync.RWMutex
+	keys        map[string]*rsa.PublicKey
+	lastRefresh time.Time
 }
 
 func NewKeySet(jwksURL string, httpClient *http.Client) (*KeySet, error) {
@@ -41,6 +44,27 @@ func NewKeySet(jwksURL string, httpClient *http.Client) (*KeySet, error) {
 		return nil, fmt.Errorf("idp: erro ao buscar JWKS inicial: %w", err)
 	}
 	return ks, nil
+}
+
+// StartAutoRefresh atualiza o cache periodicamente em segundo plano, para
+// que a rotação de chaves do IdP seja percebida mesmo sem um kid
+// desconhecido chegar via requisição. Retorna uma função que encerra o
+// loop.
+func (ks *KeySet) StartAutoRefresh(interval time.Duration) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = ks.refresh()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 func (ks *KeySet) refresh() error {
@@ -73,6 +97,7 @@ func (ks *KeySet) refresh() error {
 
 	ks.mu.Lock()
 	ks.keys = keys
+	ks.lastRefresh = time.Now()
 	ks.mu.Unlock()
 	return nil
 }
@@ -80,9 +105,14 @@ func (ks *KeySet) refresh() error {
 func (ks *KeySet) Key(kid string) (*rsa.PublicKey, error) {
 	ks.mu.RLock()
 	key, ok := ks.keys[kid]
+	sinceRefresh := time.Since(ks.lastRefresh)
 	ks.mu.RUnlock()
 	if ok {
 		return key, nil
+	}
+
+	if sinceRefresh < minRefreshInterval {
+		return nil, fmt.Errorf("idp: chave %q não encontrada no JWKS", kid)
 	}
 
 	if err := ks.refresh(); err != nil {
