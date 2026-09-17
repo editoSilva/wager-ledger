@@ -13,11 +13,18 @@ type InboxRepository struct{ pool *pgxpool.Pool }
 func NewInboxRepository(pool *pgxpool.Pool) *InboxRepository { return &InboxRepository{pool: pool} }
 
 func (r *InboxRepository) Create(ctx context.Context, consumerName, messageID, messageHash string) error {
-	_, err := querierFrom(ctx, r.pool).Exec(ctx, `INSERT INTO inbox_messages (consumer_name, message_id, message_hash) VALUES ($1,$2,$3)`, consumerName, messageID, messageHash)
-	if isUniqueViolation(err) {
+	tag, err := querierFrom(ctx, r.pool).Exec(ctx,
+		`INSERT INTO inbox_messages (consumer_name, message_id, message_hash) VALUES ($1,$2,$3)
+		 ON CONFLICT ON CONSTRAINT inbox_consumer_message_unique DO NOTHING`,
+		consumerName, messageID, messageHash,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
 		return ports.ErrAlreadyExists
 	}
-	return err
+	return nil
 }
 
 func (r *InboxRepository) MarkCompleted(ctx context.Context, consumerName, messageID string) error {

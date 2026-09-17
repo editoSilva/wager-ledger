@@ -62,3 +62,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: worker de retomada passa a expirar transações PENDING_REFERENCE além do TTL configurável, emite evento WagerTransactionExpired, instrumenta métricas de retries/replays/expiração e expõe GET por providerId+externalId.
 - Arquivos: `internal/domain/event/event.go`, `internal/application/usecase/process_wager_transaction.go`, `internal/application/usecase/process_wager_transaction_test.go`, `internal/application/usecase/reference_retry_worker.go`, `internal/application/usecase/open_wallet_test.go`, `internal/application/ports/ports.go`, `internal/config/config.go`, `internal/infra/postgres/wagertx_repository.go`, `internal/infra/http/wagering.go`.
+
+## 2026-09-17 — feature — feat(sqs): fortalece deduplicação de inbox e instrumenta o consumo de mensagens
+
+- Efeito: usa ON CONFLICT DO NOTHING para deduplicar mensagens de forma idempotente sob concorrência e registra métricas de duplicatas, falhas de entrega e latência de processamento do consumidor SQS.
+- Arquivos: `internal/infra/postgres/inbox_repository.go`, `internal/infra/postgres/inbox_repository_test.go`, `internal/infra/sqs/consumer.go`, `internal/infra/sqs/consumer_integration_test.go`.

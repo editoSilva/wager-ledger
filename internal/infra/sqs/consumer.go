@@ -18,6 +18,7 @@ import (
 	"github.com/editosilva/wager-ledger/internal/application/usecase"
 	"github.com/editosilva/wager-ledger/internal/config"
 	"github.com/editosilva/wager-ledger/internal/domain/money"
+	"github.com/editosilva/wager-ledger/internal/observability"
 )
 
 const consumerName = "wager-transactions"
@@ -45,18 +46,19 @@ type Consumer struct {
 	inbox    ports.InboxRepository
 	uow      ports.UnitOfWork
 	process  *usecase.ProcessWagerTransaction
+	metrics  *observability.Metrics
 	logger   *slog.Logger
 	cancel   context.CancelFunc
 	done     chan struct{}
 }
 
-func NewConsumer(lc fx.Lifecycle, cfg config.Config, inbox ports.InboxRepository, uow ports.UnitOfWork, process *usecase.ProcessWagerTransaction, logger *slog.Logger) (*Consumer, error) {
+func NewConsumer(lc fx.Lifecycle, cfg config.Config, inbox ports.InboxRepository, uow ports.UnitOfWork, process *usecase.ProcessWagerTransaction, metrics *observability.Metrics, logger *slog.Logger) (*Consumer, error) {
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(cfg.AWSRegion), awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AWSAccessKeyID, cfg.AWSSecretKey, "")))
 	if err != nil {
 		return nil, err
 	}
 	awsCfg.BaseEndpoint = &cfg.SQSEndpoint
-	c := &Consumer{client: awssqs.NewFromConfig(awsCfg), queueURL: cfg.SQSQueueURL, inbox: inbox, uow: uow, process: process, logger: logger, done: make(chan struct{})}
+	c := &Consumer{client: awssqs.NewFromConfig(awsCfg), queueURL: cfg.SQSQueueURL, inbox: inbox, uow: uow, process: process, metrics: metrics, logger: logger, done: make(chan struct{})}
 	lc.Append(fx.Hook{OnStart: func(context.Context) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		c.cancel = cancel
@@ -99,6 +101,7 @@ func (c *Consumer) run(ctx context.Context) {
 }
 
 func (c *Consumer) handle(ctx context.Context, body, sqsID *string) error {
+	start := time.Now()
 	e, hash, err := decodeEnvelope(body)
 	if err != nil {
 		return err
@@ -107,9 +110,12 @@ func (c *Consumer) handle(ctx context.Context, body, sqsID *string) error {
 	if id == "" && sqsID != nil {
 		id = *sqsID
 	}
-	return c.uow.Execute(ctx, func(txCtx context.Context) error {
+
+	duplicate := false
+	err = c.uow.Execute(ctx, func(txCtx context.Context) error {
 		err := c.inbox.Create(txCtx, consumerName, id, hash)
 		if errors.Is(err, ports.ErrAlreadyExists) {
+			duplicate = true
 			return nil
 		}
 		if err != nil {
@@ -121,6 +127,17 @@ func (c *Consumer) handle(ctx context.Context, body, sqsID *string) error {
 		}
 		return c.inbox.MarkCompleted(txCtx, consumerName, id)
 	})
+
+	if c.metrics != nil {
+		c.metrics.ObserveMessageProcessing("sqs", start)
+		if duplicate {
+			c.metrics.InboxDuplicatesTotal.Inc()
+		}
+		if err != nil {
+			c.metrics.MessageDeliveryFailuresTotal.Inc()
+		}
+	}
+	return err
 }
 
 func decodeEnvelope(body *string) (envelope, string, error) {
