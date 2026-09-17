@@ -1,0 +1,107 @@
+name: wager-ledger
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wager
+      POSTGRES_PASSWORD: wager
+      POSTGRES_DB: wager_ledger
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wager -d wager_ledger"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs
+      DEFAULT_REGION: us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8081:8080"
+
+  keycloak-bootstrap:
+    image: alpine:3.20
+    depends_on:
+      keycloak:
+        condition: service_started
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["sh", "-c", "apk add --no-cache bash curl jq >/dev/null && bash /scripts/keycloak-bootstrap.sh"]
+    restart: "no"
+
+  migrate:
+    image: golang:1.22-bookworm
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations:ro
+      - migrate_gocache:/root/.cache/go-build
+      - migrate_gomodcache:/go/pkg/mod
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.1 &&
+        migrate -path=/migrations -database=postgres://wager:wager@postgres:5432/wager_ledger?sslmode=disable up
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: dev
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_PORT: "8080"
+      APP_ENV: development
+      SHUTDOWN_TIMEOUT: 15s
+      DATABASE_URL: postgres://wager:wager@postgres:5432/wager_ledger?sslmode=disable
+      OIDC_ISSUER_URL: http://localhost:8081/realms/wager-ledger
+      OIDC_JWKS_URL: http://keycloak:8080/realms/wager-ledger/protocol/openid-connect/certs
+    volumes:
+      - .:/src
+      - api_gocache:/root/.cache/go-build
+      - api_gomodcache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      keycloak-bootstrap:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+  localstack_data:
+  api_gocache:
+  api_gomodcache:
+  migrate_gocache:
+  migrate_gomodcache:
