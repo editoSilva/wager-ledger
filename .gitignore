@@ -7,3 +7,8 @@ coverage.html
 .idea/
 .vscode/
 .DS_Store
+/tmp/
+.env.*
+!.env.example
+*.pem
+*.key

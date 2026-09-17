@@ -7,3 +7,10 @@ coverage.html
 .idea
 .vscode
 .DS_Store
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.claude
+.github
