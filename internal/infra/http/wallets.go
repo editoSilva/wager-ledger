@@ -41,7 +41,7 @@ func RegisterWalletRoutes(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			handleGetWallet(w, r, walletRepo)
 		}),
-		authenticate,
+		authenticate, requireInternal,
 	))
 }
 

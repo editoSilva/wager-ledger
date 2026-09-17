@@ -229,7 +229,7 @@ func (uc *ProcessWagerTransaction) resolveExisting(ctx context.Context, in Proce
 
 func (uc *ProcessWagerTransaction) replayOutput(ctx context.Context, tx *wagertx.WagerTransaction) (*ProcessWagerTransactionOutput, error) {
 	balance := money.Money{}
-	if tx.Status() == wagertx.StatusProcessed && tx.FinancialResult() != nil {
+	if tx.FinancialResult() != nil {
 		balance = *tx.FinancialResult()
 	} else {
 		w, err := uc.walletRepo.FindByID(ctx, tx.WalletID())
@@ -248,7 +248,7 @@ func (uc *ProcessWagerTransaction) replayOutput(ctx context.Context, tx *wagertx
 }
 
 func (uc *ProcessWagerTransaction) reject(ctx context.Context, tx *wagertx.WagerTransaction, w *wallet.Wallet, failureCode string, now time.Time, correlationID string) (*ProcessWagerTransactionOutput, error) {
-	if err := tx.MarkRejected(failureCode, now); err != nil {
+	if err := tx.MarkRejectedWithResult(failureCode, w.Balance(), now); err != nil {
 		return nil, err
 	}
 	if err := uc.txRepo.Update(ctx, tx); err != nil {

@@ -179,6 +179,37 @@ func TestProcessWagerTransaction_IdempotentReplay_SameKeySameContent(t *testing.
 	}
 }
 
+func TestProcessWagerTransaction_RejectedReplay_ReturnsOriginalBalance(t *testing.T) {
+	uc, walletRepo, _, _, _ := newTestProcessWagerTransaction()
+	seedWallet(t, walletRepo, "50.00")
+
+	rejectedInput := betInput("rejected-key", "rejected-tx", "80.00")
+	first, err := uc.Execute(context.Background(), rejectedInput)
+	if err != nil {
+		t.Fatalf("rejeição inicial: %v", err)
+	}
+	if first.Status != string(wagertx.StatusRejected) || first.Balance.DecimalString() != "50.00" {
+		t.Fatalf("resultado inicial = %#v, esperado REJECTED com saldo 50.00", first)
+	}
+
+	credit := betInput("credit-key", "credit-tx", "100.00")
+	credit.Kind = string(wagertx.KindWin)
+	if _, err := uc.Execute(context.Background(), credit); err != nil {
+		t.Fatalf("crédito posterior: %v", err)
+	}
+
+	replay, err := uc.Execute(context.Background(), rejectedInput)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if !replay.IdempotentReplay {
+		t.Error("replay deveria ser marcado como idempotente")
+	}
+	if replay.Balance.DecimalString() != "50.00" {
+		t.Errorf("saldo do replay = %s, esperado saldo original 50.00", replay.Balance.DecimalString())
+	}
+}
+
 func TestProcessWagerTransaction_IdempotencyConflict_SameKeyDifferentContent(t *testing.T) {
 	uc, walletRepo, _, _, _ := newTestProcessWagerTransaction()
 	seedWallet(t, walletRepo, "100.00")

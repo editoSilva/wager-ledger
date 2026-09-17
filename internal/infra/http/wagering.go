@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -141,8 +142,10 @@ func writeProcessWagerTransactionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusServiceUnavailable, "too_many_retries", err.Error())
 	case errors.Is(err, ports.ErrNotFound):
 		writeJSONError(w, http.StatusNotFound, "not_found", "carteira não encontrada")
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		writeJSONError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "serviço temporariamente indisponível")
 	default:
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "erro interno ao processar transação")
 	}
 }
 
@@ -159,7 +162,7 @@ func handleGetWagerTransaction(w http.ResponseWriter, r *http.Request, repo port
 	}
 
 	identity, ok := idp.IdentityFromContext(r.Context())
-	if ok && identity.HasRole("provider") && tx.ProviderID() != "" && tx.ProviderID() != identity.ClientID {
+	if !ok || (!identity.HasRole("internal") && (!identity.HasRole("provider") || tx.ProviderID() == "" || tx.ProviderID() != identity.ClientID)) {
 		writeJSONError(w, http.StatusForbidden, "forbidden", "acesso restrito às próprias transações do provedor")
 		return
 	}

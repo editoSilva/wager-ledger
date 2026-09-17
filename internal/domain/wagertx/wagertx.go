@@ -316,6 +316,17 @@ func (t *WagerTransaction) MarkProcessed(financialResult money.Money, now time.T
 }
 
 func (t *WagerTransaction) MarkRejected(failureCode string, now time.Time) error {
+	return t.markRejected(failureCode, nil, now)
+}
+
+// MarkRejectedWithResult encerra uma operação rejeitada preservando o saldo
+// que foi devolvido ao provedor. Assim, um replay não depende de leituras
+// posteriores da carteira.
+func (t *WagerTransaction) MarkRejectedWithResult(failureCode string, financialResult money.Money, now time.Time) error {
+	return t.markRejected(failureCode, &financialResult, now)
+}
+
+func (t *WagerTransaction) markRejected(failureCode string, financialResult *money.Money, now time.Time) error {
 	if failureCode == "" {
 		return ErrEmptyFailureCode
 	}
@@ -324,6 +335,7 @@ func (t *WagerTransaction) MarkRejected(failureCode string, now time.Time) error
 	}
 	t.status = StatusRejected
 	t.failureCode = failureCode
+	t.financialResult = financialResult
 	t.updatedAt = now
 	return nil
 }

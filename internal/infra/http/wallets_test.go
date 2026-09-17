@@ -246,7 +246,7 @@ func TestOpenWallet_HTTP_DuplicateWallet_Returns409(t *testing.T) {
 
 func TestGetWallet_HTTP_NotFound_Returns404(t *testing.T) {
 	baseURL, priv, _ := testServer(t)
-	token := signTestToken(t, priv, "provider-a", []string{"provider"})
+	token := signTestToken(t, priv, "wager-internal", []string{"internal"})
 
 	req, _ := http.NewRequest(http.MethodGet, baseURL+"/wallets/00000000-0000-0000-0000-000000000000", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -259,6 +259,23 @@ func TestGetWallet_HTTP_NotFound_Returns404(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, esperado 404", resp.StatusCode)
+	}
+}
+
+func TestGetWallet_HTTP_ProviderRole_Returns403(t *testing.T) {
+	baseURL, priv, _ := testServer(t)
+	token := signTestToken(t, priv, "provider-a", []string{"provider"})
+
+	req, _ := http.NewRequest(http.MethodGet, baseURL+"/wallets/00000000-0000-0000-0000-000000000000", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("erro na requisição: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, esperado 403", resp.StatusCode)
 	}
 }
 

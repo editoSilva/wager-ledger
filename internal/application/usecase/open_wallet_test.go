@@ -171,6 +171,9 @@ func (r *fakeTxRepo) Create(ctx context.Context, tx *wagertx.WagerTransaction) e
 		if existing.ProviderID() == tx.ProviderID() && existing.ExternalID() == tx.ExternalID() {
 			return ports.ErrAlreadyExists
 		}
+		if tx.IdempotencyKey() != "" && existing.IdempotencyKey() == tx.IdempotencyKey() {
+			return ports.ErrAlreadyExists
+		}
 	}
 	r.byID[tx.ID()] = cloneWagerTx(tx)
 	return nil
