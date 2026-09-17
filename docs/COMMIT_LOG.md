@@ -87,3 +87,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: adiciona CI de build/teste, imagem de migração dedicada, perfil de produção no Compose (rede restrita, somente leitura, sem privilégios) e script de deploy com rollback automático em caso de falha do readiness.
 - Arquivos: `.github/workflows/ci.yml`, `docker-compose.yml`, `docker/api.Dockerfile`, `docs/DEPLOYMENT.md`, `scripts/deploy-vps.sh`, `.claude/agents/deploy-manager.md`.
+
+## 2026-09-17 — manutenção — docs: documenta agentes, fluxo Git e auditoria de implementação
+
+- Efeito: institui AGENTS.md e o fluxo Git em docs/GIT_WORKFLOW.md, adiciona o agente qa-tester, registra a auditoria de lacunas de implementação e o log de QA, e atualiza ARCHITECTURE.md/DECISIONS.md para refletir observabilidade, outbox, expiração de referências, reconciliação e deploy.
+- Arquivos: `AGENTS.md`, `docs/GIT_WORKFLOW.md`, `docs/IMPLEMENTATION_AUDIT.md`, `docs/QA_LOG.md`, `.claude/agents/qa-tester.md`, `ARCHITECTURE.md`, `DECISIONS.md`.

@@ -1,5 +1,9 @@
 # Architecture Decision Records
 
+Revisão de consistência: 17/09/2026. Decisões e relatos históricos são
+preservados; não representam nova execução de testes. Consulte a
+[auditoria atual](docs/IMPLEMENTATION_AUDIT.md) para evidências e lacunas.
+
 ## ADR-001: PostgreSQL
 
 ### Context
@@ -16,27 +20,25 @@ Suporte a transações ACID, constraints e boa integração com Go.
 ## ADR-002: Idempotency
 
 ### Context
-Uma mesma requisição PIX pode chegar mais de uma vez.
+Uma mesma operação financeira de aposta pode chegar mais de uma vez.
+O registro original citava PIX; essa terminologia não pertence ao domínio atual.
 
 ### Decision
 Utilizar idempotency_key com índice UNIQUE.
 
 ### Result
-Evita criação duplicada de pagamentos.
+Intenção: evitar processamento financeiro duplicado; a implementação
+ainda não impõe unicidade própria sobre a chave.
 
 ### Status atual (revisão)
-A migration `0002_create_wager_transactions` não criou um índice único
-isolado sobre `idempotency_key`; a unicidade efetivamente imposta no
-banco hoje é `UNIQUE (provider_id, external_transaction_id)`, que
-impede duas transações para a mesma operação financeira do provedor.
-A regra completa da seção 9 do desafio (mesma chave + mesmo hash →
-replay; mesma chave + hash diferente → conflito; chave diferente para
-a mesma `(providerId, externalTransactionId)` → rejeitada) ainda
-depende do caso de uso de processamento, que não foi implementado.
-Revisitar esta decisão quando esse caso de uso for escrito: decidir se
-`idempotency_key` recebe unicidade própria no schema ou se a
-verificação de conflito fica inteiramente na aplicação, usando o hash
-persistido em `payload_hash`.
+A migration `0002_create_wager_transactions` garante apenas
+`UNIQUE (provider_id, external_transaction_id)`; a migration 0005
+adiciona índice não único em `idempotency_key`. O caso de uso já
+implementa hash, replay e conflito (ADR-007), mas SELECT seguido de
+INSERT não impede a mesma chave em operações distintas concorrentes.
+A decisão original de unicidade da chave permanece não implementada.
+É necessário definir o escopo da chave, impor UNIQUE nesse escopo e
+cobrir concorrência entre operações/carteiras diferentes.
 
 ---
 
@@ -66,8 +68,9 @@ em nenhum momento — a query mais estrita da seção 6.1.
 `MarshalJSON`/`UnmarshalJSON` compatíveis com o contrato
 `{"amount":"25.00","currency":"BRL"}`. Persistência usa `BIGINT` em
 `*_minor_units` mais `CHAR(3)` para moeda, preservando exatamente o
-valor original. 12 testes cobrem parsing, overflow e incompatibilidade
-de moeda.
+valor original. Testes cobrem parsing, overflow e incompatibilidade
+de moeda. A revisão identificou lacunas em Money não inicializado,
+validação de códigos ISO 4217 e DecimalString de math.MinInt64; ver auditoria.
 
 ---
 
@@ -90,21 +93,24 @@ Evita lock pessimista (`SELECT ... FOR UPDATE`) held por toda a
 duração da lógica de negócio em memória, que aumentaria contenção sob
 concorrência alta na mesma carteira. Otimista se alinha bem com o
 requisito de que carteiras diferentes nunca se bloqueiem entre si —
-não há lock algum retido entre transações.
+não há lock global na aplicação. UPDATEs ainda adquirem locks no
+PostgreSQL, mantidos até a conclusão da transação.
 
 ### Result
-Comprovado em teste de integração
+Coberto pelo teste de integração existente
 (`TestWalletRepository_Save_OptimisticLock`): duas leituras da mesma
 versão, dois débitos em memória, apenas o primeiro `Save` é aceito; o
 segundo falha com `ErrOptimisticLock`, e o saldo final reflete só a
 escrita bem-sucedida.
 
 ### Limitação
-O caso de uso que decide re-tentar (reler a carteira mais recente e
-reaplicar a operação) após um `ErrOptimisticLock` ainda não existe —
-é necessário para o teste obrigatório da seção 8 (100.00 BRL, duas
-apostas de 80.00 simultâneas → uma processada, uma rejeitada por
-saldo insuficiente).
+O retry foi implementado em `ProcessWagerTransaction` (ADR-007), com
+até cinco tentativas completas. O teste 100/80/80 existe como teste
+automatizado de integração (goroutines, um processo) e foi
+adicionalmente validado com processos de sistema operacional
+independentes (`curl` concorrente contra a API real em Docker) na
+rodada de QA de 17/09/2026 — ver `docs/QA_LOG.md`. A validação com
+processos de SO reais não está automatizada em CI.
 
 ---
 
@@ -141,11 +147,15 @@ roles. Testes HTTP E2E (`wallets_test.go`) confirmam 401 sem token,
 403 com role errada, 201/200 com role correta.
 
 ### Limitação
-O isolamento entre providers (cada provider só acessa suas próprias
-transações, inclusive em replay) ainda não está implementado, porque
-depende dos endpoints de transação de aposta que ainda não existem.
-`docker-compose.yml` não executa o bootstrap automaticamente — é um
-passo manual documentado, não parte do `docker compose up`.
+POST de aposta valida role provider e correspondência de providerId
+com azp; GET de carteira e GET de transação exigem role `internal`. O
+middleware exige `exp` e valida `aud` contra `OIDC_AUDIENCE`, com o
+client scope de audience provisionado automaticamente no bootstrap do
+Keycloak. Os testes de unidade continuam usando JWKS simulado; a
+integração com o Keycloak real (emissão de token real, `aud` correto,
+fluxo HTTP completo autenticado) foi validada manualmente via
+`docker compose` na rodada de QA de 17/09/2026 (`docs/QA_LOG.md`), mas
+não está automatizada como teste executável em CI.
 
 ---
 
@@ -162,8 +172,7 @@ Um único `PgUnitOfWork.Execute(ctx, fn)` (implementando
 `context.Context` via chave privada, e todo repositório Postgres
 resolve `querierFrom(ctx, pool)`: usa a transação se presente no
 context, senão usa o pool diretamente. Isso permite que múltiplos
-repositórios (`wallet`, `wagertx`, `ledger`, e futuramente
-inbox/outbox) participem da mesma transação SQL sem acoplamento direto
+repositórios (`wallet`, `wagertx`, `ledger`, `outbox` e futuramente inbox) participem da mesma transação SQL sem acoplamento direto
 entre eles — nenhum repositório recebe outro como dependência.
 
 ### Reason
@@ -181,13 +190,22 @@ cada operação de negócio deve ter seu próprio limite).
 atualização de status, tudo confirmado ou revertido junto) e
 `TestFullFlow_RollbackOnError` (erro após o débito reverte também o
 `Save` do saldo). `OpenWallet` usa o mesmo padrão para carteira +
-`OPENING` + lançamento de abertura.
+`OPENING` + lançamento de abertura + eventos de outbox.
 
 ### Limitação
-Ainda não testado com inbox/outbox porque esses repositórios não
-existem — a decisão de design já suporta isso (basta escrever o
-repositório seguindo o mesmo padrão `querierFrom`), mas não há prova
-em código ainda.
+`OutboxRepository` e `InboxRepository` participam do mesmo contexto
+transacional. `OpenWallet` e `ProcessWagerTransaction` usam a outbox;
+`sqs.Consumer` usa a inbox dentro da mesma transação do efeito
+financeiro (`ExecuteWithin`), garantindo que o `DeleteMessage` do SQS só
+ocorra após o commit. Testes de recuperação/publicação concorrente
+(dois publishers, reentrega SQS real) foram adicionados na rodada de QA
+de 17/09/2026 — ver `internal/infra/outbox/publisher_integration_test.go`
+e `internal/infra/sqs/consumer_integration_test.go`. Essa mesma rodada
+encontrou e corrigiu um bug real: `InboxRepository.Create` deixava a
+transação Postgres abortada ao capturar a violação de unicidade em uma
+duplicidade esperada, fazendo o `COMMIT` subsequente falhar mesmo
+quando a duplicidade deveria ser um no-op silencioso (ver
+`internal/infra/postgres/inbox_repository.go` e ARCHITECTURE.md).
 
 ---
 
@@ -239,7 +257,9 @@ transação real — ver limitação abaixo).
 
 Testes de integração reais contra Postgres
 (`internal/infra/postgres/process_wager_transaction_integration_test.go`)
-comprovam, com `-race` e 10 execuções consecutivas:
+cobrem os cenários abaixo. A anotação original relata `-race` e dez
+execuções consecutivas; isso é histórico, não uma validação repetida
+na revisão de 17/09/2026:
 - duas apostas de 80.00 concorrentes sobre 100.00 → uma `PROCESSED`,
   uma `REJECTED` por `INSUFFICIENT_BALANCE`, saldo final 20.00, um
   único lançamento de ledger;
@@ -252,7 +272,13 @@ compartilhavam ponteiros entre "repositório" e objeto de domínio em
 uso, e o `fakeUOW` não revertia nada em caso de erro — isso mascarava
 bugs de concorrência que só apareciam contra o Postgres real. Foram
 corrigidos para clonar em leitura/escrita e reverter no erro,
-replicando semântica transacional; qualquer novo fake de repositório
+replicando parte da semântica transacional; qualquer novo fake de
+repositório deve seguir esse padrão, sem substituir testes reais.
+
+A checagem por chave não tem UNIQUE no banco: operações distintas
+concorrentes podem usar a mesma chave. Replay de REJECTED usa saldo
+atual. Esses casos não são cobertos pelos dois testes concorrentes
+citados e impedem considerar a idempotência completa.
 
 ---
 
@@ -268,10 +294,10 @@ código e ver o efeito sem rebuildar a imagem manualmente a cada vez
 (equivalente ao `nodemon` do Node.js).
 
 ### Decision
-`docker/api.Dockerfile` passa a ter três stages: `base` (download de
+`docker/api.Dockerfile` passa a ter quatro stages: `base` (download de
 dependências, compartilhado), `dev` (imagem `golang:1.22-bookworm`
-completa com `air` instalado, roda `air -c .air.toml`) e `runtime`
-(inalterado — build estático + distroless). `docker-compose.yml` builda
+completa com `air` instalado, roda `air -c .air.toml`), `build` (compilação estática) e `runtime`
+(distroless). `docker-compose.yml` builda
 o stage `dev` para o serviço `api`, com o código-fonte montado como
 volume (`.:/src`) — qualquer alteração em um arquivo `.go` faz o `air`
 recompilar e reiniciar o processo dentro do container automaticamente.
@@ -298,13 +324,13 @@ ambiente (Docker Desktop em macOS); rodar `golang-migrate` via
 projeto evitou a dependência nessa imagem e é igualmente confiável.
 
 ### Result
-`docker compose up --build` sobe Postgres, Keycloak (com realm/roles/
+O Compose está configurado para subir Postgres, Keycloak (com realm/roles/
 clients provisionados), LocalStack e a API, todos dependendo
-corretamente uns dos outros, sem nenhum passo manual. Testado
+corretamente uns dos outros, sem passo manual de bootstrap. O registro original relata teste
 editando `internal/infra/http/server.go` com o container rodando: o
 `air` detectou a mudança, recompilou e reiniciou o servidor em
 segundos, com o novo log aparecendo automaticamente — sem
-`docker compose restart` nem rebuild da imagem.
+`docker compose restart` nem rebuild da imagem. Esse relato histórico não foi reexecutado nesta revisão.
 
 ### Limitação
 Durante a configuração, o Docker Desktop travou (múltiplos processos
@@ -315,4 +341,3 @@ identificada, possivelmente uma imagem parcialmente corrompida em
 cache de uma tentativa anterior interrompida. Se o build travar de
 forma parecida no futuro, reiniciar o Docker Desktop e rodar
 `docker compose build --no-cache --pull` costuma resolver.
-deve seguir o mesmo padrão.
