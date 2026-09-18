@@ -173,6 +173,11 @@ Não tem 3 máquinas físicas à mão? [`scripts/multi-machine-test-docker.sh`](
 docker compose up -d                        # stack base (se ainda não estiver no ar)
 chmod +x scripts/multi-machine-test-docker.sh
 ./scripts/multi-machine-test-docker.sh both
+
+# limpeza dos 3 hosts simulados — NÃO use `docker compose --profile
+# multi-machine down`: o Compose ignora o profile no `down` e derruba o
+# projeto inteiro (api, postgres, keycloak, localstack juntos)
+docker compose --profile multi-machine rm -sf mmt-host1 mmt-host2 mmt-host3
 ```
 
 Outros cenários da checklist do §13 (recuperação após restart, disputa de outbox entre 2 publishers, reentrega SQS após kill do consumidor) e seus resultados estão registrados em [`docs/QA_LOG.md`](docs/QA_LOG.md).

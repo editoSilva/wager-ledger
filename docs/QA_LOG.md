@@ -52,3 +52,26 @@ Não registre segredos, tokens, valores de `.env` ou dados de clientes.
   - Classificação de erros HTTP de infraestrutura (400 vs 500/503) não foi revisitada nesta rodada.
   - Tracing distribuído (OpenTelemetry) não implementado — diferencial opcional, fora do escopo.
   - A flakiness observada uma única vez no teste `TestTwoPublishers_ContendingForSamePendingRecords_NoDoublePublish` (falha isolada logo após o container LocalStack ter acabado de subir, sem reprodução em execuções subsequentes) não foi investigada a fundo; suspeita de warm-up de conexão/container, não de bug de aplicação.
+
+## 2026-09-18 10:10 UTC — Validação da infraestrutura de teste distribuído via Docker (multi-machine-test-docker.sh)
+
+- Gatilho: commit `8aa8248` (feat(qa): distribui teste de concorrência em hosts Docker reais via SSH), que substitui os placeholders `HOSTS="user@host1 ..."` do README por um caminho executável de verdade (`scripts/multi-machine-test-docker.sh`) — necessário confirmar formalmente, sem depender só da validação ad-hoc do autor da mudança.
+- Escopo: `docker/mmt-host.Dockerfile`, `docker/mmt-host-entrypoint.sh`, `docker-compose.yml` (serviços `mmt-host1/2/3` no profile `multi-machine`), `scripts/multi-machine-test-docker.sh` (novo) e `scripts/multi-machine-test.sh` (variável `REMOTE_API_URL`). Não há teste `go test` novo — a mudança é puramente de infraestrutura/scripts de shell, então a bateria escolhida foi execução real ponta a ponta dos próprios scripts, duas vezes, mais o ciclo de vida completo dos containers (build do zero, reuso, down).
+- Testes criados: nenhum arquivo de teste novo; a verificação foi a execução dos scripts de shell já existentes contra a stack Docker real.
+- Testes executados:
+  - `docker compose ps` (stack base já no ar antes da rodada) — api/keycloak/localstack/postgres saudáveis, `GET /health/ready` → `{"status":"ok"}`.
+  - Limpeza do resíduo do run ad-hoc anterior do autor (`docker compose --profile multi-machine rm -f mmt-host1 mmt-host2 mmt-host3`, `docker rmi` das 3 imagens, `rm -rf .mmt-ssh`) para garantir um "do zero" genuíno.
+  - `./scripts/multi-machine-test-docker.sh both` (1ª vez, do zero, com build) — PASS/PASS.
+  - `./scripts/multi-machine-test.sh both` (sem `HOSTS`, modo local/background) — PASS/PASS, para confirmar que o caminho antigo/default não quebrou.
+  - `./scripts/multi-machine-test-docker.sh both` (2ª vez, containers/imagens/chave SSH já existentes) — PASS/PASS, sem erro de reentrada.
+  - `docker compose --profile multi-machine down` — ver Bugs encontrados.
+  - `docker compose up -d` (restauração manual da stack base) + `GET /health/ready`, `GET /realms/wager-ledger` (Keycloak), `GET /_localstack/health` — todos OK após a restauração.
+- Evidência: distribuído com processos de SO reais — 3 processos `ssh` independentes (`ssh://tester@localhost:2221/2222/2223`, cada um um container Docker isolado com seu próprio `sshd`, filesystem e rede) para o cenário idempotency, e 2 para o cenário dispute, contra a API real via `http://api:8080` (rede do compose). Resultados observados, idênticos nas duas execuções do script Docker:
+  - idempotency (N=3, mesma aposta de 30.00 sobre carteira de 100.00): 1 original + 2 replays, saldo final 70.00, `reconciliation.consistent=true`.
+  - dispute (2 apostas de 80.00 sobre carteira de 100.00): 1 PROCESSED + 1 REJECTED (`INSUFFICIENT_BALANCE`), saldo final 20.00, `reconciliation.consistent=true`.
+  - Modo local (sem `HOSTS`): mesmos resultados (70.00 e 20.00, consistent=true), confirmando paridade de comportamento entre os dois caminhos.
+- Bugs encontrados:
+  1. `docker compose --profile multi-machine down` (comportamento do Docker Compose, não um bug de código do projeto, mas contraria a expectativa documentada/esperada de limpeza seletiva) — o subcomando `down` do Docker Compose não aceita filtrar por serviço/profile: ele derruba **o projeto inteiro**, incluindo os serviços do profile padrão (`api`, `postgres`, `keycloak`, `keycloak-bootstrap`, `localstack`, `migrate`) junto com os `mmt-host1/2/3` do profile `multi-machine`. Reproduzido nesta rodada: rodar esse comando com a stack base já no ar derrubou tudo, exigindo `docker compose up -d` manual para restaurar. `docker/mmt-host-entrypoint.sh` e o `docker-compose.yml` em si não têm bug; o problema é a orientação de limpeza no fluxo de trabalho (README e/ou o próprio `multi-machine-test-docker.sh` não fazem a limpeza automaticamente e não alertam sobre esse efeito colateral). Recomendação: usar `docker compose --profile multi-machine rm -sf mmt-host1 mmt-host2 mmt-host3` (ou `stop`+`rm` explícito por nome de serviço) em vez de `down` quando se quiser remover só os hosts simulados sem afetar a stack base.
+- Pendências:
+  - Não foi testado o cenário "SSH quebra no meio de um processo dispatched" (ex.: matar um container `mmt-hostN` durante uma requisição em voo) — fora do escopo desta rodada, que focou em validar o ciclo de vida normal (build, execução, reexecução, cleanup) da infraestrutura nova.
+  - Não foi testado com máquinas físicas reais via `HOSTS` (fora do alcance do ambiente de QA); a equivalência de comportamento entre o caminho Docker e o caminho físico se apoia na revisão do script (`multi-machine-test.sh` não distingue a origem do host, só o destino SSH).
