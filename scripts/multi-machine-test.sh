@@ -31,13 +31,28 @@
 #                            processos, os hosts são reaproveitados em
 #                            rodízio.
 #   SSH_OPTS                 opções extras para o ssh (ex.: "-i chave.pem")
+#   REMOTE_API_URL           endpoint da API que os PROCESSOS enxergam ao
+#                            enviar a aposta (default: o mesmo de API_URL).
+#                            Só precisa ser diferente de API_URL quando o
+#                            coordenador e os hosts de HOSTS não alcançam a
+#                            API pelo mesmo endereço — ex.: hosts são
+#                            containers Docker e falam "http://api:8080"
+#                            enquanto o coordenador (no host) usa
+#                            "http://localhost:8080".
 #
-# Requer curl e jq no coordenador; e nas máquinas de HOSTS, se usado.
-# API_URL/KEYCLOAK_URL precisam ser alcançáveis a partir de cada host de
-# HOSTS — o docker-compose.yml deste projeto já expõe as portas 8080/8081
-# em todas as interfaces (não só 127.0.0.1), então "http://<ip-do-host-que-
-# roda-docker-compose>:8080" funciona a partir de outra máquina na mesma
-# rede, se a porta estiver liberada no firewall.
+# Requer curl e jq no coordenador; e bash no destino de cada processo
+# (local ou, com HOSTS, em cada máquina via SSH). REMOTE_API_URL precisa ser
+# alcançável a partir de cada host de HOSTS — para máquinas físicas de
+# verdade na mesma rede, o docker-compose.yml deste projeto já expõe as
+# portas 8080/8081 em todas as interfaces (não só 127.0.0.1), então
+# "http://<ip-do-host-que-roda-docker-compose>:8080" funciona a partir de
+# outra máquina na rede, se a porta estiver liberada no firewall.
+#
+# Não tem 3 máquinas físicas à mão? scripts/multi-machine-test-docker.sh
+# sobe 3 containers Linux com sshd próprio (processo, rede e filesystem
+# isolados entre si) e roda este script apontando HOSTS para eles — funciona
+# só com `git clone` + Docker, sem precisar de hardware extra nem SSH
+# configurado manualmente.
 
 set -euo pipefail
 
@@ -61,6 +76,14 @@ INTERNAL_CLIENT_ID="${INTERNAL_CLIENT_ID:-wager-internal}"
 INTERNAL_CLIENT_SECRET="${INTERNAL_CLIENT_SECRET:-wager-internal-secret}"
 PROVIDER_CLIENT_ID="${PROVIDER_CLIENT_ID:-provider-a}"
 PROVIDER_CLIENT_SECRET="${PROVIDER_CLIENT_SECRET:-provider-a-secret}"
+# Endpoint que os PROCESSOS DISPATCHADOS (local em background, ou remoto via
+# SSH em HOSTS) usam para enviar a aposta — pode diferir de API_URL quando o
+# coordenador e os hosts não enxergam a API pelo mesmo endereço (ex.: hosts
+# são containers na rede do docker compose e falam com "http://api:8080",
+# enquanto o coordenador roda no host e usa "http://localhost:8080"). Se não
+# for definido, cai no mesmo valor de API_URL (caso comum: tudo na mesma
+# máquina).
+REMOTE_API_URL="${REMOTE_API_URL:-$API_URL}"
 SSH_OPTS="${SSH_OPTS:-}"
 read -r -a HOSTS_ARR <<< "${HOSTS:-}"
 
@@ -123,7 +146,7 @@ bet_script() {
   # cenários abaixo precisam inspecionar — com -f o curl descartaria o
   # corpo e devolveria só um código de saída, escondendo o motivo real.
   cat <<SCRIPT
-curl -s -X POST '$API_URL/wagering/transactions' \
+curl -s -X POST '$REMOTE_API_URL/wagering/transactions' \
   -H 'Authorization: Bearer $provider_token' -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: $idem_key' \
   -d '{"providerId":"$PROVIDER_CLIENT_ID","externalTransactionId":"$external_id","playerId":"$player_id","walletId":"$wallet_id","roundId":"round-multi-machine","gameId":"game-multi-machine","kind":"BET","money":{"amount":"$amount","currency":"BRL"}}'

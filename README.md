@@ -153,9 +153,26 @@ chmod +x scripts/multi-machine-test.sh
 
 # os dois cenários em sequência
 ./scripts/multi-machine-test.sh both
+```
 
-# distribuído em 3 máquinas físicas de verdade
-HOSTS="user@host1 user@host2 user@host3" ./scripts/multi-machine-test.sh both
+Sem `HOSTS`, cada processo roda localmente em background — ainda são processos de SO independentes, só não em máquinas físicas diferentes. Para distribuir de verdade:
+
+```sh
+# distribuído em 3 máquinas físicas de verdade — troque pelos SEUS hosts
+# SSH reais e alcançáveis (chave sem senha, já que roda em paralelo em
+# background); "user@host1" etc. abaixo são placeholders, não resolvem em
+# lugar nenhum
+HOSTS="user@10.0.0.11 user@10.0.0.12 user@10.0.0.13" \
+REMOTE_API_URL="http://10.0.0.10:8080" \
+  ./scripts/multi-machine-test.sh both
+```
+
+Não tem 3 máquinas físicas à mão? [`scripts/multi-machine-test-docker.sh`](scripts/multi-machine-test-docker.sh) sobe 3 containers Linux com `sshd` próprio (processo, rede e filesystem isolados entre si) e roda o teste distribuído neles — funciona só com `git clone` + Docker, sem hardware extra nem SSH configurado à mão:
+
+```sh
+docker compose up -d                        # stack base (se ainda não estiver no ar)
+chmod +x scripts/multi-machine-test-docker.sh
+./scripts/multi-machine-test-docker.sh both
 ```
 
 Outros cenários da checklist do §13 (recuperação após restart, disputa de outbox entre 2 publishers, reentrega SQS após kill do consumidor) e seus resultados estão registrados em [`docs/QA_LOG.md`](docs/QA_LOG.md).

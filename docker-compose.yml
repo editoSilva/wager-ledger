@@ -136,6 +136,43 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # "Máquinas físicas" simuladas para scripts/multi-machine-test-docker.sh:
+  # cada uma é um container Linux com seu próprio sshd, isolado do host e
+  # das outras (processo de SO, rede e filesystem próprios) — o mais perto
+  # de "3 máquinas físicas" que dá pra garantir só com `git clone` + Docker,
+  # sem exigir que quem baixa o projeto possua hardware extra de verdade.
+  # Ficam atrás do profile "multi-machine" para não subir em um `docker
+  # compose up` normal.
+  mmt-host1:
+    profiles: [multi-machine]
+    build:
+      context: .
+      dockerfile: docker/mmt-host.Dockerfile
+    secrets:
+      - mmt-authorized-keys
+    ports:
+      - "127.0.0.1:2221:22"
+
+  mmt-host2:
+    profiles: [multi-machine]
+    build:
+      context: .
+      dockerfile: docker/mmt-host.Dockerfile
+    secrets:
+      - mmt-authorized-keys
+    ports:
+      - "127.0.0.1:2222:22"
+
+  mmt-host3:
+    profiles: [multi-machine]
+    build:
+      context: .
+      dockerfile: docker/mmt-host.Dockerfile
+    secrets:
+      - mmt-authorized-keys
+    ports:
+      - "127.0.0.1:2223:22"
+
   migrate-production:
     image: ${MIGRATION_IMAGE:-wager-ledger-migrator:unconfigured}
     profiles: [production]
@@ -150,6 +187,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+secrets:
+  mmt-authorized-keys:
+    file: ./.mmt-ssh/authorized_keys
 
 volumes:
   postgres_data:

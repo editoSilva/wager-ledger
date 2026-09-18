@@ -12,3 +12,4 @@ coverage.html
 !.env.example
 *.pem
 *.key
+/.mmt-ssh/
