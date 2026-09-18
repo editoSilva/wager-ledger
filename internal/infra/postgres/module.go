@@ -16,5 +16,6 @@ var Module = fx.Module("postgres",
 		fx.Annotate(NewOutboxRepository, fx.As(new(ports.OutboxRepository))),
 		fx.Annotate(NewInboxRepository, fx.As(new(ports.InboxRepository))),
 		fx.Annotate(NewUnitOfWork, fx.As(new(ports.UnitOfWork))),
+		fx.Annotate(NewUnitOfWork, fx.As(new(ports.SnapshotReader))),
 	),
 )

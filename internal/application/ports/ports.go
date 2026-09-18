@@ -66,6 +66,15 @@ type InboxRepository interface {
 	MarkCompleted(ctx context.Context, consumerName, messageID string) error
 }
 
+// SnapshotReader executa fn dentro de uma transação somente-leitura com
+// snapshot consistente (REPEATABLE READ), garantindo que múltiplas leituras
+// (ex.: saldo da carteira + soma do ledger) vejam o mesmo estado do banco.
+// Sem isso, uma escrita concorrente entre as leituras pode fazer a
+// reconciliação reportar divergência onde não há corrupção real de dados.
+type SnapshotReader interface {
+	ReadSnapshot(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
 type UnitOfWork interface {
 	Execute(ctx context.Context, fn func(ctx context.Context) error) error
 }

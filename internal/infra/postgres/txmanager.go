@@ -59,3 +59,23 @@ func NewUnitOfWork(pool *pgxpool.Pool) *PgUnitOfWork {
 func (u *PgUnitOfWork) Execute(ctx context.Context, fn func(ctx context.Context) error) error {
 	return WithinTx(ctx, u.pool, fn)
 }
+
+// ReadSnapshot implementa ports.SnapshotReader com REPEATABLE READ
+// somente-leitura: todas as SELECTs dentro de fn veem o mesmo snapshot do
+// banco, tirado no início da transação, mesmo que outra transação faça
+// commit no meio da execução de fn.
+func (u *PgUnitOfWork) ReadSnapshot(ctx context.Context, fn func(ctx context.Context) error) error {
+	tx, err := u.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+
+	txCtx := context.WithValue(ctx, txCtxKey{}, tx)
+
+	if err := fn(txCtx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+
+	return tx.Commit(ctx)
+}

@@ -390,7 +390,8 @@ func TestProcessWagerTransaction_WinReferencingBet_PersistsAgainstRealSchema(t *
 // exatamente o que POST /wallets/:id/reconciliation verifica em produção.
 func assertReconciled(t *testing.T, ctx context.Context, walletRepo *WalletRepository, ledgerRepo *LedgerRepository, id wallet.ID) {
 	t.Helper()
-	reconcile := usecase.NewReconcileWallet(walletRepo, ledgerRepo, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	uow := NewUnitOfWork(walletRepo.pool)
+	reconcile := usecase.NewReconcileWallet(uow, walletRepo, ledgerRepo, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	out, err := reconcile.Execute(ctx, id)
 	if err != nil {
 		t.Fatalf("ReconcileWallet.Execute: %v", err)

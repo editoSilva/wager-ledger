@@ -20,34 +20,41 @@ type ReconcileWalletOutput struct {
 }
 
 type ReconcileWallet struct {
+	snapshot   ports.SnapshotReader
 	walletRepo ports.WalletRepository
 	ledgerRepo ports.LedgerRepository
 	metrics    *observability.Metrics
 	logger     *slog.Logger
 }
 
-func NewReconcileWallet(walletRepo ports.WalletRepository, ledgerRepo ports.LedgerRepository, metrics *observability.Metrics, logger *slog.Logger) *ReconcileWallet {
-	return &ReconcileWallet{walletRepo: walletRepo, ledgerRepo: ledgerRepo, metrics: metrics, logger: logger}
+func NewReconcileWallet(snapshot ports.SnapshotReader, walletRepo ports.WalletRepository, ledgerRepo ports.LedgerRepository, metrics *observability.Metrics, logger *slog.Logger) *ReconcileWallet {
+	return &ReconcileWallet{snapshot: snapshot, walletRepo: walletRepo, ledgerRepo: ledgerRepo, metrics: metrics, logger: logger}
 }
 
 func (uc *ReconcileWallet) Execute(ctx context.Context, walletID wallet.ID) (*ReconcileWalletOutput, error) {
-	w, err := uc.walletRepo.FindByID(ctx, walletID)
-	if err != nil {
-		return nil, err
-	}
+	var (
+		stored, calculated money.Money
+		checkedEntries     int
+	)
+	err := uc.snapshot.ReadSnapshot(ctx, func(txCtx context.Context) error {
+		w, err := uc.walletRepo.FindByID(txCtx, walletID)
+		if err != nil {
+			return err
+		}
+		stored = w.Balance()
 
-	checkedEntries, err := uc.ledgerRepo.CountByWallet(ctx, walletID)
-	if err != nil {
-		return nil, err
-	}
+		checkedEntries, err = uc.ledgerRepo.CountByWallet(txCtx, walletID)
+		if err != nil {
+			return err
+		}
 
-	stored := w.Balance()
-	var calculated money.Money
-	if checkedEntries == 0 {
-		calculated, err = money.Zero(stored.Currency())
-	} else {
-		calculated, err = uc.ledgerRepo.SumByWallet(ctx, walletID)
-	}
+		if checkedEntries == 0 {
+			calculated, err = money.Zero(stored.Currency())
+			return err
+		}
+		calculated, err = uc.ledgerRepo.SumByWallet(txCtx, walletID)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -119,7 +119,7 @@ func testServer(t *testing.T) (baseURL string, priv *rsa.PrivateKey, pool *pgxpo
 	logger := observability.NewLogger(config.Config{})
 	openWallet := usecase.NewOpenWallet(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen)
 	processWagerTx := usecase.NewProcessWagerTransaction(uow, walletRepo, txRepo, ledgerRepo, outboxRepo, idGen, metrics)
-	reconcileWallet := usecase.NewReconcileWallet(walletRepo, ledgerRepo, metrics, logger)
+	reconcileWallet := usecase.NewReconcileWallet(uow, walletRepo, ledgerRepo, metrics, logger)
 
 	mux := NewRouter()
 	authenticate := idp.Authenticate(keySet, testIssuer, testAudience)
