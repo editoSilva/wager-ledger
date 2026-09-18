@@ -28,7 +28,7 @@ Serviço em Go, composto com **Uber Fx**, que processa operações financeiras d
 ## Quickstart
 
 ```sh
-git clone <este-repositório> && cd wager-ledger
+git clone https://github.com/editoSilva/wager-ledger.git && cd wager-ledger
 cp .env.example .env        # valores locais de exemplo, sem segredos reais
 docker compose up -d --build
 ```
