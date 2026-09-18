@@ -107,3 +107,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: adiciona scripts/multi-machine-test.sh, que automatiza os cenários de concorrência do README (disputa 100/80/80 e reenvio idempotente N vezes) usando processos de SO independentes, opcionalmente distribuídos via SSH em máquinas reais.
 - Arquivos: `scripts/multi-machine-test.sh`.
+
+## 2026-09-18 — manutenção — docs(readme): adiciona instruções de execução e documenta o fluxo de agentes
+
+- Efeito: acrescenta ao README quickstart, variáveis de ambiente, identidades de teste, exemplos de chamadas, testes, cenários obrigatórios de concorrência/recuperação, observabilidade, estrutura do projeto e o fluxo de desenvolvimento assistido pelos agentes em .claude/agents/, preservando o enunciado original do desafio.
+- Arquivos: `README.md`.

@@ -1,3 +1,219 @@
+# Wager Ledger
+
+Serviço em Go, composto com **Uber Fx**, que processa operações financeiras de provedores de jogos (`BET`/`WIN`/`LOSS`/`REFUND`/`ROLLBACK`) via HTTP e SQS, com idempotência persistente, ledger append-only e recuperação de falhas em ambiente distribuído. Solução para o desafio descrito [mais abaixo](#desafio-backend--processamento-distribuído-de-apostas-em-go).
+
+> Instruções de execução e evidências de conformidade abaixo. Decisões de arquitetura detalhadas em [`ARCHITECTURE.md`](ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
+## Índice
+
+- [Pré-requisitos](#pré-requisitos)
+- [Quickstart](#quickstart)
+- [Variáveis de ambiente](#variáveis-de-ambiente)
+- [Identidades de teste (Keycloak)](#identidades-de-teste-keycloak)
+- [Exemplos de chamadas](#exemplos-de-chamadas)
+- [Testes](#testes)
+- [Cenários obrigatórios de concorrência e recuperação](#cenários-obrigatórios-de-concorrência-e-recuperação)
+- [Observabilidade](#observabilidade)
+- [Estrutura do projeto](#estrutura-do-projeto)
+- [Fluxo de desenvolvimento assistido por agentes](#fluxo-de-desenvolvimento-assistido-por-agentes)
+- [Decisões de arquitetura e limitações conhecidas](#decisões-de-arquitetura-e-limitações-conhecidas)
+
+## Pré-requisitos
+
+- Docker e Docker Compose v2
+- Go 1.22+ (só para rodar testes/lint fora de container)
+- `curl` e `jq` (exemplos abaixo usam os dois)
+- `awscli`/`awslocal` opcional, para inspecionar as filas SQS manualmente
+
+## Quickstart
+
+```sh
+git clone <este-repositório> && cd wager-ledger
+cp .env.example .env        # valores locais de exemplo, sem segredos reais
+docker compose up --build
+```
+
+Isso sobe, na ordem correta de dependência (`depends_on` + healthchecks no `docker-compose.yml`):
+
+1. `postgres` — banco, com healthcheck `pg_isready`
+2. `migrate` — aplica as migrations versionadas em [`migrations/`](migrations) e encerra
+3. `keycloak` + `keycloak-bootstrap` — sobe o IdP e provisiona automaticamente o realm `wager-ledger`, as roles `provider`/`internal` e os clients de teste (ver [scripts/keycloak-bootstrap.sh](scripts/keycloak-bootstrap.sh))
+4. `localstack` — cria as filas `wager-transactions.fifo` / `wager-events.fifo` e suas DLQs (ver [scripts/localstack-init-sqs.sh](scripts/localstack-init-sqs.sh))
+5. `api` — sobe em `http://localhost:8080` só depois que as etapas 1–4 estiverem saudáveis/concluídas
+
+Confirme que subiu:
+
+```sh
+curl -s http://localhost:8080/health/live | jq
+curl -s http://localhost:8080/health/ready | jq   # valida Postgres e SQS de verdade, não só o processo
+```
+
+Para derrubar tudo (incluindo dados do Postgres/LocalStack):
+
+```sh
+docker compose down -v
+```
+
+## Variáveis de ambiente
+
+Descritas em [`.env.example`](.env.example). O `docker-compose.yml` já injeta os valores equivalentes para o serviço `api` local; o `.env` só é necessário para rodar a API fora de container.
+
+| Variável | Descrição |
+| --- | --- |
+| `HTTP_PORT` | porta HTTP da API (padrão `8080`) |
+| `APP_ENV` | `development` \| `production` |
+| `SHUTDOWN_TIMEOUT` | prazo de graceful shutdown (`fx.Lifecycle`) |
+| `DATABASE_URL` | DSN do Postgres |
+| `OIDC_ISSUER_URL` / `OIDC_JWKS_URL` | endpoints do Keycloak para validação de token |
+| `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | credenciais dummy para o SDK falar com o LocalStack |
+| `SQS_ENDPOINT`, `SQS_QUEUE_URL`, `SQS_DLQ_URL`, `EVENTS_QUEUE_URL`, `EVENTS_DLQ_URL` | endpoints das filas de entrada e de eventos |
+
+## Identidades de teste (Keycloak)
+
+O `keycloak-bootstrap` cria automaticamente 3 clients `client_credentials`, prontos para uso:
+
+| Client | Role | Uso |
+| --- | --- | --- |
+| `provider-a` / secret `provider-a-secret` | `provider` | simula o provedor A enviando/consultando suas próprias transações |
+| `provider-b` / secret `provider-b-secret` | `provider` | usado para comprovar isolamento entre provedores |
+| `wager-internal` / secret `wager-internal-secret` | `internal` | abertura de carteira, leitura de saldo/ledger, reconciliação |
+
+```sh
+get_token() {
+  curl -s -X POST http://localhost:8081/realms/wager-ledger/protocol/openid-connect/token \
+    -d "client_id=$1" -d "client_secret=$2" -d grant_type=client_credentials | jq -r .access_token
+}
+
+PROVIDER_TOKEN=$(get_token provider-a provider-a-secret)
+INTERNAL_TOKEN=$(get_token wager-internal wager-internal-secret)
+```
+
+## Exemplos de chamadas
+
+Fluxo completo: abrir carteira → apostar → ganhar → estornar, com verificação de idempotência.
+
+```sh
+# 1. Abrir carteira (rota interna)
+PLAYER_ID=$(uuidgen | tr 'A-Z' 'a-z')
+WALLET=$(curl -s -X POST http://localhost:8080/wallets \
+  -H "Authorization: Bearer $INTERNAL_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"playerId\":\"$PLAYER_ID\",\"initialBalance\":{\"amount\":\"1000.00\",\"currency\":\"BRL\"}}")
+WALLET_ID=$(echo "$WALLET" | jq -r .id)
+echo "$WALLET" | jq
+
+# 2. Apostar (rota do provedor, idempotente por header)
+curl -s -X POST http://localhost:8080/wagering/transactions \
+  -H "Authorization: Bearer $PROVIDER_TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: provider-a:tx-001' \
+  -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"tx-001\",\"playerId\":\"$PLAYER_ID\",\"walletId\":\"$WALLET_ID\",\"roundId\":\"round-1\",\"gameId\":\"fortune-chimp\",\"kind\":\"BET\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}" | jq
+
+# 3. Reenviar a mesma chamada → deve voltar "idempotentReplay": true, mesmo transactionId e saldo
+curl -s -X POST http://localhost:8080/wagering/transactions \
+  -H "Authorization: Bearer $PROVIDER_TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: provider-a:tx-001' \
+  -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"tx-001\",\"playerId\":\"$PLAYER_ID\",\"walletId\":\"$WALLET_ID\",\"roundId\":\"round-1\",\"gameId\":\"fortune-chimp\",\"kind\":\"BET\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}" | jq
+
+# 4. Consultar ledger e reconciliar
+curl -s "http://localhost:8080/wallets/$WALLET_ID/ledger?limit=50" -H "Authorization: Bearer $INTERNAL_TOKEN" | jq
+curl -s -X POST "http://localhost:8080/wallets/$WALLET_ID/reconciliation" -H "Authorization: Bearer $INTERNAL_TOKEN" | jq
+```
+
+O contrato completo de todas as rotas (payloads, respostas, headers) está documentado na [seção 9 do enunciado, abaixo](#9-contratos-http).
+
+## Testes
+
+```sh
+go build ./...
+go vet ./...
+
+# Suíte sem dependência de infra real (domain, application, config, observability, idgen, idp, http)
+go test ./internal/domain/... ./internal/application/... ./internal/config/... \
+  ./internal/observability/... ./internal/infra/idgen/... ./internal/infra/idp/... ./internal/infra/http/...
+
+# Com Postgres/LocalStack reais rodando (docker compose up -d postgres localstack)
+go test ./... -count=1
+go test -race -count=1 ./...
+```
+
+Os testes de integração usam containers reais de Postgres/LocalStack — nenhuma dependência de infraestrutura é mockada nesses testes (ver critérios eliminatórios, [§14](#14-critérios-de-avaliação)).
+
+## Cenários obrigatórios de concorrência e recuperação
+
+O script [`scripts/multi-machine-test.sh`](scripts/multi-machine-test.sh) automatiza os cenários das seções [§8](#8-concorrência) e [§13](#13-verificação-obrigatória) com **processos de SO independentes** (memória e conexão próprias), opcionalmente distribuídos por SSH em máquinas físicas diferentes via `HOSTS`:
+
+```sh
+chmod +x scripts/multi-machine-test.sh
+
+# §8: carteira com 100.00 BRL recebe 2 apostas de 80.00 BRL simultâneas
+#     → esperado: 1 PROCESSED, 1 REJECTED, saldo final 20.00, 1 único débito no ledger
+./scripts/multi-machine-test.sh dispute
+
+# §13.1: a mesma aposta enviada N vezes em paralelo → esperado: um único débito
+./scripts/multi-machine-test.sh idempotency 5
+
+# os dois cenários em sequência
+./scripts/multi-machine-test.sh both
+
+# distribuído em 3 máquinas físicas de verdade
+HOSTS="user@host1 user@host2 user@host3" ./scripts/multi-machine-test.sh both
+```
+
+Outros cenários da checklist do §13 (recuperação após restart, disputa de outbox entre 2 publishers, reentrega SQS após kill do consumidor) e seus resultados estão registrados em [`docs/QA_LOG.md`](docs/QA_LOG.md).
+
+## Observabilidade
+
+```sh
+curl -s http://localhost:8080/metrics | grep wager   # métricas Prometheus: status, duplicatas, retries, DLQ, atraso de outbox
+docker compose logs -f api                             # logs JSON correlacionados por correlationId/transactionId/walletId/providerId
+```
+
+## Estrutura do projeto
+
+```
+cmd/api                      # composição raiz (main + módulos Fx)
+internal/
+  domain/                    # entidades e regras de negócio, sem dependência de Fx/HTTP/SQS/infra
+    money/  wallet/  wagertx/  ledger/  event/
+  application/
+    ports/                   # interfaces que o domínio expõe para a infra implementar
+    usecase/                 # casos de uso (process wager transaction, reconcile wallet, ...)
+  infra/
+    http/                    # handlers, rotas e middlewares HTTP
+    idp/                     # validação de token OIDC/JWT (Keycloak)
+    postgres/                # repositórios, transações, migrations runtime
+    sqs/                     # consumidor SQS
+    outbox/                  # publisher transacional
+    idgen/                   # geração de IDs (UUIDv7)
+  config/                    # carregamento e validação de configuração
+  observability/             # logger, métricas
+migrations/                  # migrations versionadas (golang-migrate)
+scripts/                     # bootstrap Keycloak, init SQS, teste de concorrência multi-processo
+docker/                      # Dockerfiles
+docs/                        # auditoria de implementação, log de QA, workflow de deploy/git
+```
+
+O domínio (`internal/domain`) não importa Fx, HTTP, SQS nem bibliotecas de persistência — dependências fluem de fora para dentro via `application/ports`, injetadas por construtores nos módulos Fx.
+
+## Fluxo de desenvolvimento assistido por agentes
+
+O desenvolvimento deste projeto usa um conjunto de agentes especializados, definidos em [`.claude/agents/`](.claude/agents) e referenciados em [`AGENTS.md`](AGENTS.md), cada um com escopo, ferramentas e critérios de aceite próprios — em vez de um único assistente genérico tratando revisão, testes, versionamento e deploy da mesma forma. A ideia é a mesma separação de responsabilidades que o código aplica em `internal/{domain,application,infra}`, só que aplicada ao processo de trabalho.
+
+| Agente | Responsabilidade | Quando atua | Acionado por |
+| --- | --- | --- | --- |
+| [`go-reviewer`](.claude/agents/go-reviewer.md) | Revisão de código Go: invariantes de domínio (ledger/wallet/money), idioma Go, aderência à arquitetura hexagonal, transações/outbox/inbox | Proativamente após qualquer alteração em código Go, antes de considerar a tarefa concluída | mudança em `.go` |
+| [`security-reviewer`](.claude/agents/security-reviewer.md) | AppSec: validação de token OIDC, IDOR entre provedores, injeção, segredos em config/log | Ao tocar autenticação, endpoints HTTP, dinheiro/saldo, Keycloak, SQS, Postgres ou config | mudança sensível a segurança |
+| [`qa-tester`](.claude/agents/qa-tester.md) | Executa a aplicação de verdade — testes unitários, integração com Postgres/SQS/Keycloak reais, cenários de concorrência e recuperação das §8/§13 do enunciado | Proativamente ao final de toda funcionalidade, correção ou refatoração | conclusão de feature/fix |
+| [`commit-manager`](.claude/agents/commit-manager.md) | Organiza branches, separa mudanças coerentes em commits Conventional Commits, mantém [`docs/COMMIT_LOG.md`](docs/COMMIT_LOG.md) | Ao concluir alterações autorizadas para versionamento | fim de tarefa |
+| [`deploy-manager`](.claude/agents/deploy-manager.md) | CI/CD (GitHub Actions), build/publicação de imagens no GHCR, deploy e rollback em VPS Docker, conforme [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Configurar, executar ou diagnosticar deploy e migrations | pedido de deploy/release |
+
+Cada agente lê o histórico do repositório (`git status`/`diff`/`log`), a documentação correspondente e o que já foi registrado (`docs/QA_LOG.md`, `docs/COMMIT_LOG.md`, `docs/IMPLEMENTATION_AUDIT.md`) antes de agir — nenhum deles assume sucesso sem executar a verificação real (ex.: `qa-tester` não declara um cenário coberto sem rodar contra Postgres/SQS/Keycloak reais; `commit-manager` nunca comita `.env`, segredos ou binários). Isso mantém o rastro de decisão auditável: toda rodada de QA vira entrada em `docs/QA_LOG.md`, e todo commit vira entrada em `docs/COMMIT_LOG.md` com categoria e caminhos afetados.
+
+## Decisões de arquitetura e limitações conhecidas
+
+Decisões sobre `Money`, controle de concorrência da carteira, máquina de estados de `WagerTransaction`, inbox/outbox, autenticação/autorização, composição com Fx e shutdown — incluindo interpretações adotadas e trabalho não concluído — estão registradas em [`ARCHITECTURE.md`](ARCHITECTURE.md) (seção "Limitações conhecidas e trabalho não concluído") e no histórico de [`DECISIONS.md`](DECISIONS.md).
+
+---
+
 # Desafio Backend — Processamento Distribuído de Apostas em Go
 
 Implemente um serviço em **Go**, com **Uber Fx**, para processar operações financeiras de provedores de jogos em um ambiente distribuído.
