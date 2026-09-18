@@ -325,6 +325,12 @@ localmente contra JWKS.**
   o mesmo padrão do servidor HTTP — `OnStart` inicia o loop em goroutine
   própria, `OnStop` cancela o contexto e aguarda (`<-done`) o término
   observável do trabalho em andamento antes de `fx.StopTimeout` expirar.
+- No consumidor SQS, mensagens já recebidas em lote (`ReceiveMessage` traz
+  até 10) mas ainda não processadas quando o `OnStop` cancela o contexto
+  têm sua visibilidade liberada explicitamente (`ChangeMessageVisibility`
+  com `VisibilityTimeout: 0`, em `sqs/consumer.go`), permitindo reentrega
+  imediata em vez de esperar o `VisibilityTimeout` da fila (30s, ver
+  `scripts/localstack-init-sqs.sh`) expirar naturalmente.
 
 ## 10. Geração de identificadores
 

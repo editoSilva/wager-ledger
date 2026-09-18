@@ -12,6 +12,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"go.uber.org/fx"
 
 	"github.com/editosilva/wager-ledger/internal/application/ports"
@@ -87,15 +88,37 @@ func (c *Consumer) run(ctx context.Context) {
 			}
 			continue
 		}
-		for _, m := range out.Messages {
+		for i, m := range out.Messages {
+			if ctx.Err() != nil {
+				c.releaseVisibility(out.Messages[i:])
+				break
+			}
 			if err := c.handle(ctx, m.Body, m.MessageId); err != nil {
 				c.logger.Error("falha ao processar mensagem SQS", slog.Any("error", err))
+				if errors.Is(err, context.Canceled) {
+					c.releaseVisibility([]sqstypes.Message{m})
+				}
 				continue
 			}
 			_, err = c.client.DeleteMessage(ctx, &awssqs.DeleteMessageInput{QueueUrl: &c.queueURL, ReceiptHandle: m.ReceiptHandle})
 			if err != nil {
 				c.logger.Error("falha ao remover mensagem SQS", slog.Any("error", err))
 			}
+		}
+	}
+}
+
+func (c *Consumer) releaseVisibility(msgs []sqstypes.Message) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, m := range msgs {
+		_, err := c.client.ChangeMessageVisibility(cleanupCtx, &awssqs.ChangeMessageVisibilityInput{
+			QueueUrl:          &c.queueURL,
+			ReceiptHandle:     m.ReceiptHandle,
+			VisibilityTimeout: 0,
+		})
+		if err != nil {
+			c.logger.Error("falha ao liberar visibilidade da mensagem SQS", slog.Any("error", err))
 		}
 	}
 }
