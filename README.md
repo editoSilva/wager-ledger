@@ -30,7 +30,7 @@ Serviço em Go, composto com **Uber Fx**, que processa operações financeiras d
 ```sh
 git clone <este-repositório> && cd wager-ledger
 cp .env.example .env        # valores locais de exemplo, sem segredos reais
-docker compose up --build
+docker compose up -d --build
 ```
 
 Isso sobe, na ordem correta de dependência (`depends_on` + healthchecks no `docker-compose.yml`):
