@@ -3,6 +3,7 @@ package httpserver
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -86,9 +87,7 @@ func handleOpenWallet(w http.ResponseWriter, r *http.Request, uc *usecase.OpenWa
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(walletResponse{
+	writeJSON(w, http.StatusCreated, walletResponse{
 		ID:       out.ID,
 		PlayerID: out.PlayerID,
 		Balance:  out.Balance,
@@ -108,9 +107,7 @@ func handleGetWallet(w http.ResponseWriter, r *http.Request, repo ports.WalletRe
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(walletResponse{
+	writeJSON(w, http.StatusOK, walletResponse{
 		ID:       string(found.ID()),
 		PlayerID: string(found.PlayerID()),
 		Balance:  found.Balance(),
@@ -168,9 +165,7 @@ func handleGetWalletLedger(w http.ResponseWriter, r *http.Request, ledgerRepo po
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(ledgerPageResponse{Entries: out, NextCursor: nextCursor})
+	writeJSON(w, http.StatusOK, ledgerPageResponse{Entries: out, NextCursor: nextCursor})
 }
 
 type reconciliationResponse struct {
@@ -195,9 +190,7 @@ func handleReconcileWallet(w http.ResponseWriter, r *http.Request, uc *usecase.R
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(reconciliationResponse{
+	writeJSON(w, http.StatusOK, reconciliationResponse{
 		WalletID:          out.WalletID,
 		StoredBalance:     out.StoredBalance,
 		CalculatedBalance: out.CalculatedBalance,
@@ -210,7 +203,27 @@ func handleReconcileWallet(w http.ResponseWriter, r *http.Request, uc *usecase.R
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
+	writeJSONBody(w, map[string]string{"error": code, "message": message})
+}
+
+// writeJSON escreve o header/status e o corpo JSON de uma resposta de
+// sucesso. writeJSONBody escreve só o corpo — usada quando o header/status
+// já foram definidos separadamente (ex.: writeJSONError).
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	writeJSONBody(w, v)
+}
+
+// writeJSONBody serializa v no corpo da resposta. Uma falha aqui só pode
+// ocorrer depois que o header/status já foram escritos (não há como voltar
+// a um erro HTTP nesse ponto), então é logada em vez de descartada — sem
+// isso, o cliente recebe um corpo truncado/vazio sem nenhum registro do
+// motivo.
+func writeJSONBody(w http.ResponseWriter, v any) {
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Default().Error("falha ao serializar corpo da resposta HTTP", slog.Any("error", err))
+	}
 }
 
 func chain(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler {

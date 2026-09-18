@@ -15,8 +15,17 @@ func NewLogger(cfg config.Config) *slog.Logger {
 
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 
-	return slog.New(handler).With(
+	logger := slog.New(handler).With(
 		slog.String("service", "wager-ledger"),
 		slog.String("env", cfg.Environment),
 	)
+
+	// slog.SetDefault permite que código que não recebe *slog.Logger por
+	// injeção (ex.: handlers HTTP que só logam em caminhos de erro raros,
+	// como falha ao serializar a resposta) ainda use o logger estruturado
+	// real da aplicação via slog.Default(), em vez de descartar o erro ou
+	// cair no logger de texto não estruturado padrão do pacote slog.
+	slog.SetDefault(logger)
+
+	return logger
 }

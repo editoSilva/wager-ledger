@@ -126,9 +126,7 @@ func handleProcessWagerTransaction(w http.ResponseWriter, r *http.Request, uc *u
 		status = http.StatusOK
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(wageringResponse{
+	writeJSON(w, status, wageringResponse{
 		TransactionID:    out.TransactionID,
 		Status:           out.Status,
 		Balance:          out.Balance,
@@ -176,9 +174,7 @@ func handleGetWagerTransaction(w http.ResponseWriter, r *http.Request, repo port
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(wagerTransactionResponse{
+	writeJSON(w, http.StatusOK, wagerTransactionResponse{
 		TransactionID:         string(tx.ID()),
 		ProviderID:            tx.ProviderID(),
 		ExternalTransactionID: tx.ExternalID(),
@@ -212,9 +208,7 @@ func handleGetWagerTransactionByProviderAndExternalID(w http.ResponseWriter, r *
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(wagerTransactionResponse{
+	writeJSON(w, http.StatusOK, wagerTransactionResponse{
 		TransactionID:         string(tx.ID()),
 		ProviderID:            tx.ProviderID(),
 		ExternalTransactionID: tx.ExternalID(),

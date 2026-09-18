@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 )
@@ -30,13 +29,10 @@ func RegisterHealthRoutes(mux *http.ServeMux, checkers ...ReadinessChecker) {
 			}
 		}
 
-		w.Header().Set("Content-Type", "application/json")
 		if len(failures) > 0 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "unavailable", "failures": failures})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable", "failures": failures})
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	})
 }

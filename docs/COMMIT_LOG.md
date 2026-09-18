@@ -97,3 +97,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: POST /wallets/{id}/reconciliation agora lê o saldo da carteira e a soma do ledger dentro de uma transação REPEATABLE READ somente-leitura, evitando falso-positivo de divergência quando uma escrita concorrente ocorre entre as duas leituras.
 - Arquivos: `internal/application/ports/ports.go`, `internal/application/usecase/reconcile_wallet.go`, `internal/application/usecase/reconcile_wallet_test.go`, `internal/infra/postgres/module.go`, `internal/infra/postgres/txmanager.go`, `internal/infra/postgres/process_wager_transaction_integration_test.go`, `internal/infra/http/wallets_test.go`.
+
+## 2026-09-18 — manutenção — refactor(http): unifica escrita de respostas JSON e loga falhas de serialização
+
+- Efeito: centraliza header/status/corpo das respostas HTTP de sucesso em um helper writeJSON único, e registra no logger estruturado da aplicação (via slog.SetDefault) qualquer falha ao serializar o corpo da resposta, que antes era silenciosamente descartada.
+- Arquivos: `internal/infra/http/health.go`, `internal/infra/http/wagering.go`, `internal/infra/http/wallets.go`, `internal/observability/logger.go`.
