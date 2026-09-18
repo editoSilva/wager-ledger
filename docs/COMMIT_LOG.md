@@ -102,3 +102,8 @@ do commit é definido; a associação é feita pelo commit que versiona a entrad
 
 - Efeito: centraliza header/status/corpo das respostas HTTP de sucesso em um helper writeJSON único, e registra no logger estruturado da aplicação (via slog.SetDefault) qualquer falha ao serializar o corpo da resposta, que antes era silenciosamente descartada.
 - Arquivos: `internal/infra/http/health.go`, `internal/infra/http/wagering.go`, `internal/infra/http/wallets.go`, `internal/observability/logger.go`.
+
+## 2026-09-18 — manutenção — test(concorrência): adiciona script para os cenários obrigatórios de disputa e reenvio idempotente
+
+- Efeito: adiciona scripts/multi-machine-test.sh, que automatiza os cenários de concorrência do README (disputa 100/80/80 e reenvio idempotente N vezes) usando processos de SO independentes, opcionalmente distribuídos via SSH em máquinas reais.
+- Arquivos: `scripts/multi-machine-test.sh`.
