@@ -463,4 +463,4 @@ go vet ./...
 
 Documente separadamente como preparar as dependências dos testes e executar integração, múltiplas instâncias e simulações de falha. Se utilizar build tags, informe os comandos correspondentes.
 
-Entregue código formatado com `gofmt` e dependências reproduzíveis.
+Entregue código formatado com `gofmt` e dependências reproduzíveis.# wager-ledger
